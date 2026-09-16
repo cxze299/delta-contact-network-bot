@@ -87,6 +87,7 @@ sudo systemctl status contactbot
 ```text
 CONTACTBOT_ADMIN_WEB_TOKEN=至少32字符的独立随机值
 CONTACTBOT_ADMIN_WEB_PORT=8787
+CONTACTBOT_ADMIN_WEB_BIND=127.0.0.1
 ```
 
 Compose 只监听 NAS 回环地址。管理员在自己的电脑建立 SSH 隧道后访问 `http://127.0.0.1:8787`：
@@ -96,3 +97,5 @@ ssh -L 8787:127.0.0.1:8787 NAS用户@NAS地址
 ```
 
 浏览器身份验证用户名为 `admin`，密码为管理令牌。不要把端口改成公网监听，也不要复用机器人 Secret 或网络加入码作为管理令牌。
+
+如果需要在 NAS 局域网中直接访问，将 `.env` 中的 `CONTACTBOT_ADMIN_WEB_BIND` 改为 `0.0.0.0`，然后重新运行部署脚本。访问地址为 `http://NAS局域网IP:8787`。后台仍要求 HTTP Basic 登录；如需从公网访问，建议在 DSM 反向代理中配置 HTTPS 和访问控制，不要直接转发明文 HTTP 端口。
