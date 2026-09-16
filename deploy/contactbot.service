@@ -1,0 +1,24 @@
+[Unit]
+Description=Delta Chat Contact Network Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=contactbot
+Group=contactbot
+WorkingDirectory=/opt/contactbot
+EnvironmentFile=/etc/contactbot/contactbot.env
+ExecStart=/opt/contactbot/.venv/bin/contactbot run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/contactbot
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+

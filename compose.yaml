@@ -1,0 +1,33 @@
+name: delta-contact-network-bot
+services:
+  contact-bot:
+    build: .
+    image: delta-contact-network-bot:python-0.7.5
+    container_name: delta-contact-network-bot
+    # Existing Delta Core account files on this NAS are owned by root.
+    user: "0:0"
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ${CONTACTBOT_DATA_HOST_PATH:-./data}:/app/data
+      - ${CONTACTBOT_ACCOUNT_HOST_PATH:-./runtime/account}:/app/account
+      - ${CONTACTBOT_RPC_HOST_PATH:-./runtime/bin}:/app/rpc:ro
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+  admin-web:
+    image: delta-contact-network-bot:python-0.7.5
+    container_name: delta-contact-network-admin
+    user: "0:0"
+    restart: unless-stopped
+    env_file: .env
+    command: ["admin-web", "--host", "0.0.0.0", "--port", "8787"]
+    ports:
+      - "127.0.0.1:${CONTACTBOT_ADMIN_WEB_PORT:-8787}:8787"
+    volumes:
+      - ${CONTACTBOT_DATA_HOST_PATH:-./data}:/app/data
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
