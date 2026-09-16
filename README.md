@@ -68,6 +68,8 @@ contactbot run
 
 更多说明见 [部署文档](deploy/DEPLOY.md)、[成员和管理员指南](docs/USER_GUIDE.md) 与 [验收清单](docs/ACCEPTANCE.md)。
 
+服务器通过 GitHub 部署时，可在配置好 `.env` 和 Delta Chat RPC Server 后运行 `scripts/deploy-server.sh`。脚本会在更新容器前备份数据库，并完成构建、启动和健康检查。
+
 ## 本地管理后台
 
 `contactbot admin-web` 提供一个可编辑的网页后台。Docker Compose 只把它映射到 NAS 的 `127.0.0.1:8787`，需要通过 SSH 端口转发访问。后台采用独立的 HTTP Basic 管理令牌，用户名固定为 `admin`，并对修改表单执行 CSRF 校验。

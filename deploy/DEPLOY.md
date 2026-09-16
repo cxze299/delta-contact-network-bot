@@ -1,5 +1,36 @@
 # Linux 部署
 
+## Docker 自动部署（推荐）
+
+从 GitHub 克隆项目后，先准备环境和 Delta Chat RPC Server：
+
+```bash
+git clone https://github.com/cxze299/delta-contact-network-bot.git
+cd delta-contact-network-bot
+cp .env.example .env
+chmod 600 .env
+```
+
+编辑 `.env`，至少填写 `CONTACTBOT_SECRET`、`CONTACTBOT_ADMIN_WEB_TOKEN`、系统管理员地址，以及三个宿主机挂载路径。把与 `deltachat2==2.58.0` 匹配的 RPC Server 放入 `CONTACTBOT_RPC_HOST_PATH` 指向的目录，然后运行：
+
+```bash
+chmod +x scripts/deploy-server.sh
+./scripts/deploy-server.sh
+```
+
+脚本会检查环境与 Compose 配置、创建所需目录、备份运行中的 SQLite 数据库、给旧镜像添加回退标签、从源码构建镜像、更新两个容器，并检查容器状态、后台鉴权和启动日志。默认复用 Docker 构建缓存；需要完全重建时使用：
+
+```bash
+CONTACTBOT_NO_CACHE=1 ./scripts/deploy-server.sh
+```
+
+若 Docker 安装在非标准路径，可设置 `CONTACTBOT_DOCKER_BIN`。项目不在脚本上级目录时，可设置 `CONTACTBOT_PROJECT_DIR`。以后更新使用：
+
+```bash
+git pull --ff-only
+./scripts/deploy-server.sh
+```
+
 ## 前提
 
 - Debian 12 / Ubuntu 24.04 或同等 Linux

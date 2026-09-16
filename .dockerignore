@@ -7,7 +7,5 @@ __pycache__
 backups
 data
 dist
-!dist/
-!dist/*.whl
 runtime
 *.tgz

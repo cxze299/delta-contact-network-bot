@@ -2,7 +2,7 @@ name: delta-contact-network-bot
 services:
   contact-bot:
     build: .
-    image: delta-contact-network-bot:python-0.7.5
+    image: delta-contact-network-bot:python-0.7.6
     container_name: delta-contact-network-bot
     # Existing Delta Core account files on this NAS are owned by root.
     user: "0:0"
@@ -17,7 +17,7 @@ services:
     tmpfs:
       - /tmp
   admin-web:
-    image: delta-contact-network-bot:python-0.7.5
+    image: delta-contact-network-bot:python-0.7.6
     container_name: delta-contact-network-admin
     user: "0:0"
     restart: unless-stopped
