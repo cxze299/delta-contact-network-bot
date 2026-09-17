@@ -6,7 +6,7 @@ import os
 import sys
 
 from deltachat2 import Rpc
-from deltachat2.transport import IOTransport
+from deltachat2.transport import IOTransport, JsonRpcError
 
 from .config import Settings
 from .database import Database
@@ -81,7 +81,15 @@ def main(argv: list[str] | None = None) -> int:
             if rpc.is_configured(account_id):
                 raise RuntimeError("机器人账号已经配置")
             rpc.add_transport_from_qr(account_id, args.account_qr)
-            print(f"账号 {account_id} 配置完成")
+            rpc.set_config(account_id, "displayname", settings.display_name)
+            address = rpc.get_config(account_id, "addr")
+            print(f"账号 {account_id} 配置完成：{address}")
+            try:
+                invite = rpc.get_chat_securejoin_qr_code(account_id, None)
+                if invite.startswith("OPENPGP4FPR:"):
+                    print("机器人添加链接：https://i.delta.chat/#" + invite.removeprefix("OPENPGP4FPR:"))
+            except JsonRpcError:
+                logging.getLogger("contactbot.cli").warning("暂时无法生成机器人添加链接")
             return 0
         if not rpc.is_configured(account_id):
             raise RuntimeError("机器人账号尚未配置，请先运行 contactbot configure <账号QR>")

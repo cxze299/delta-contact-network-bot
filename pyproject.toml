@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "delta-contact-network-bot"
-version = "0.7.6"
+version = "0.7.7"
 description = "Privacy-conscious contact network bot for Delta Chat"
 readme = "README.md"
 requires-python = ">=3.11"

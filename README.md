@@ -40,6 +40,31 @@
 
 ## Docker 部署
 
+### 交互式一键部署（推荐）
+
+把项目克隆到服务器上的任意目录，然后运行安装脚本：
+
+```bash
+git clone https://github.com/cxze299/delta-contact-network-bot.git
+cd delta-contact-network-bot
+chmod +x scripts/install-interactive.sh
+./scripts/install-interactive.sh
+```
+
+脚本会依次询问：
+
+- 机器人显示名称；
+- Chatmail 中继服务器域名，例如 `nine.testrun.org`；
+- 系统管理员的 Delta Chat 地址；
+- 后台监听方式和端口；
+- 持久化数据目录。
+
+确认后，脚本会自动生成两组独立密钥，根据服务器 CPU 架构下载并校验 Delta Chat RPC Server 2.59.0，通过中继服务器自动创建机器人账号，初始化数据库、构建镜像、启动容器并完成健康检查。后台密码会保存到权限为 `0600` 的 `admin-web-access.txt`。
+
+脚本只接受全新目录。如果目录中已经存在 `.env`、机器人账号或数据库，请运行 `./scripts/deploy-server.sh` 更新现有部署，避免覆盖数据。
+
+下面是需要自行控制每一步时使用的手动 Docker 部署方法。
+
 ### 1. 准备服务器
 
 服务器需要：
@@ -49,7 +74,7 @@
 - Docker Compose v2
 - Git
 - `curl`
-- 与 Python 依赖 `deltachat2==2.58.0` 兼容的 `deltachat-rpc-server`
+- `deltachat-rpc-server` 2.59.0（手动部署时需要自行下载）
 
 建议为机器人准备一个专用 Delta Chat 账号，不要使用个人主账号。
 

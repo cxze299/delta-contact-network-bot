@@ -1,6 +1,17 @@
 # Linux 部署
 
-## Docker 自动部署（推荐）
+## 交互式全自动部署（推荐）
+
+在全新克隆的项目目录中运行：
+
+```bash
+chmod +x scripts/install-interactive.sh
+./scripts/install-interactive.sh
+```
+
+脚本会询问机器人名称、Chatmail 中继服务器、系统管理员地址、后台端口和持久化目录，随后自动生成密钥、下载并校验 RPC Server、创建机器人账号、初始化数据库并启动两个容器。已有 `.env` 或业务数据时，使用 `scripts/deploy-server.sh` 更新，不要运行全新安装脚本。
+
+## 手动准备配置后部署
 
 从 GitHub 克隆项目后，先准备环境和 Delta Chat RPC Server：
 
@@ -11,7 +22,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-编辑 `.env`，至少填写 `CONTACTBOT_SECRET`、`CONTACTBOT_ADMIN_WEB_TOKEN`、系统管理员地址，以及三个宿主机挂载路径。把与 `deltachat2==2.58.0` 匹配的 RPC Server 放入 `CONTACTBOT_RPC_HOST_PATH` 指向的目录，然后运行：
+编辑 `.env`，至少填写 `CONTACTBOT_SECRET`、`CONTACTBOT_ADMIN_WEB_TOKEN`、系统管理员地址，以及三个宿主机挂载路径。把已验证兼容的 RPC Server 2.59.0 放入 `CONTACTBOT_RPC_HOST_PATH` 指向的目录，然后运行：
 
 ```bash
 chmod +x scripts/deploy-server.sh
@@ -36,7 +47,7 @@ git pull --ff-only
 - Debian 12 / Ubuntu 24.04 或同等 Linux
 - Python 3.11 或 3.12
 - `sqlite3`
-- `deltachat-rpc-server` 2.58，与项目固定的 `deltachat2==2.58.0` 保持同一版本线
+- `deltachat-rpc-server` 2.59.0；当前项目固定的 `deltachat2==2.58.0` 已与该版本完成实际部署验证
 - 独立的低权限系统用户 `contactbot`
 
 RPC Server 应从 Delta Chat 官方发布渠道取得，并校验发布方提供的校验值。确认 `deltachat-rpc-server --version` 后再启动服务。
