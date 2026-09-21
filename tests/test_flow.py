@@ -355,8 +355,15 @@ def test_help_is_only_shown_for_help_command(app):
 
     help_output = app.send("admin", "帮助", admin=True)
     assert "【联系网络】" in help_output[-1][1]
-    assert "【屏蔽、举报与数据】" in help_output[-1][1]
+    assert "【安全与账号】" in help_output[-1][1]
+    assert "【其他】" in help_output[-1][1]
     assert "切换网络" in help_output[-1][1]
+
+    admin_help = app.send("admin", "管理", admin=True)[-1][1]
+    assert "【网络管理】" in admin_help
+    assert "【成员管理】" in admin_help
+    assert "【审核与记录】" in admin_help
+    assert "【系统管理员】" in admin_help
 
 
 def test_admin_approved_account_recovery_moves_identity_and_resends_history(app):
