@@ -224,6 +224,17 @@ class BotService:
         if command == "__GUIDE_WELCOME__":
             self._begin_guidance(conn, user, now, msg_key)
             return
+        if text in {"查找好友", "添加好友", "继续添加", "查看资料", "加入新网络", "加入其他网络"}:
+            if text in {"加入新网络", "加入其他网络"}:
+                self._pending(conn, user["id"], "guide_join_code", {}, now)
+                self._reply(conn, user["id"], "请回复新网络的加入码。\n输入 q 退出。", msg_key)
+            elif text == "查看资料":
+                self._guide_profile(conn, user, now, msg_key)
+            else:
+                self._current_membership(conn, user)
+                self._pending(conn, user["id"], "guide_search", {}, now)
+                self._reply(conn, user["id"], "想添加谁？请回复对方的昵称。\n输入 q 退出。", msg_key)
+            return
         pending = conn.execute(
             "SELECT * FROM pending_actions WHERE user_id=? AND expires_at>?", (user["id"], now)
         ).fetchone()
@@ -501,18 +512,7 @@ class BotService:
             "SELECT 1 FROM memberships WHERE user_id=? AND status='active'", (user["id"],)
         ).fetchone()
         if membership:
-            self._pending(conn, user["id"], "guide_next", {}, now)
-            self._reply(
-                conn,
-                user["id"],
-                "你好，我来带你认识网络中的成员。\n\n"
-                "🔎 发送“查找好友”按昵称查找\n"
-                "👤 发送“查看资料”查看我的资料\n"
-                "🌐 发送“加入新网络”加入新网络\n"
-                "📖 发送“帮助”查看完整指令\n"
-                "🚪 输入 q 退出。",
-                key,
-            )
+            self._guide_next(conn, user, now, key)
             return
         self._pending(conn, user["id"], "guide_join_code", {}, now)
         self._reply(
@@ -675,7 +675,11 @@ class BotService:
                     "请回复要加入的新网络加入码。\n输入 q 退出。", key
                 )
             else:
-                self._guide_next(conn, user, now, key)
+                self._pending(conn, user["id"], "guide_search", {}, now)
+                self._guided_reply(
+                    conn, user, {"action": "guide_search", "payload": "{}"},
+                    text, encrypted, contact_address, now, key,
+                )
             return
 
         if action == "guide_profile":
@@ -718,7 +722,7 @@ class BotService:
             if not rows:
                 self._reply(
                     conn, user["id"],
-                    "没有找到可联系的公开成员，请重新回复昵称或成员编号。\n输入 q 退出。",
+                    "还没找到这个人，试试昵称中的几个字。\n输入 q 退出。",
                     key,
                 )
                 return
@@ -732,15 +736,17 @@ class BotService:
             )
             self._reply(
                 conn, user["id"],
-                f"找到以下成员：\n{result}\n\n回复数字选择联系人并直接发送名片。\n输入 q 退出。",
+                f"找到以下成员：\n{result}\n\n回复数字，将把你的名片发送给选中的人。\n输入 q 退出。",
                 key,
             )
             return
 
         if action == "guide_choose_target":
             if not answer.isdigit() or not 1 <= int(answer) <= len(payload["ids"]):
-                conn.execute("DELETE FROM pending_actions WHERE user_id=?", (user["id"],))
-                self._guide_next(conn, user, now, key)
+                self._reply(
+                    conn, user["id"],
+                    f"请回复 1 至 {len(payload['ids'])} 的数字选择好友，或输入 q 退出。", key,
+                )
                 return
             requester, _ = self._current_membership(conn, user)
             target = conn.execute(
@@ -901,7 +907,8 @@ class BotService:
         self._reply(
             conn,
             user["id"],
-            "设置完成。接下来选择：\n\n"
+            "想添加谁？直接回复对方昵称，我来帮你找。\n"
+            "选中后会把你的名片发送给对方，等对方点击添加。\n\n"
             "🔎 发送“查找好友”按昵称查找\n"
             "👤 发送“查看资料”查看我的资料\n"
             "🌐 发送“加入新网络”加入新网络\n"

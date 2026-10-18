@@ -306,7 +306,7 @@ def test_greeting_reopens_member_menu_without_error(app):
     assert "无法完成" not in output[-1][1]
 
 
-def test_invalid_old_search_selection_returns_to_menu(app):
+def test_invalid_search_selection_keeps_results_for_retry(app):
     _, code = create_network(app)
     join(app, "alice", code, "小艾")
     join(app, "bob", code, "小波")
@@ -315,9 +315,38 @@ def test_invalid_old_search_selection_returns_to_menu(app):
     app.send("alice", "小波")
 
     output = app.send("alice", "旧用户随便发送的内容")
-    assert "查找好友" in output[-1][1]
-    assert "查看资料" in output[-1][1]
+    assert "回复 1 至 1" in output[-1][1]
     assert "无法完成" not in output[-1][1]
+    sent = app.send("alice", "1")
+    assert any(who == "bob" and "联系人名片" in body for who, body in sent)
+
+
+def test_direct_nickname_search_after_join_and_send(app):
+    _, code = create_network(app)
+    join(app, "bob", code, "小波")
+    join(app, "carol", code, "小可")
+    app.send("alice", "")
+    app.send("alice", code)
+    joined = app.send("alice", "小艾")
+    assert any("直接回复对方昵称" in body for _, body in joined)
+    found = app.send("alice", "小波")
+    assert "【1】小波" in found[-1][1]
+    sent = app.send("alice", "1")
+    assert any(who == "bob" and "联系人名片" in body for who, body in sent)
+    found = app.send("alice", "小可")
+    assert "【1】小可" in found[-1][1]
+    app.send("alice", "q")
+    assert not app.conn.execute("SELECT 1 FROM pending_actions p JOIN users u ON u.id=p.user_id WHERE u.actor_key='alice'").fetchone()
+
+
+def test_guided_shortcuts_work_after_help_and_during_search(app):
+    _, code = create_network(app)
+    join(app, "alice", code, "小艾")
+    app.send("alice", "帮助")
+    output = app.send("alice", "添加好友")
+    assert "回复对方的昵称" in output[-1][1]
+    output = app.send("alice", "查看资料")
+    assert "资料操作" in output[-1][1]
 
 
 def test_member_can_join_second_network_from_guide(app):
