@@ -47,12 +47,13 @@ def test_contact_change_invalidates_confirmation(app):
     join(app, "alice", code, "甲")
     join(app, "bob", code, "乙")
     app.send("bob", "接收申请")
-    app.send("alice", "设置联系方式 old@example.org")
+    app.send("alice", "设置联系方式 alice@example.org")
     target = app.conn.execute(
         "SELECT member_code FROM memberships m JOIN users u ON u.id=m.user_id WHERE u.actor_key='bob'"
     ).fetchone()[0]
     pending = app.send("alice", f"申请 {target} 你好")
-    app.send("alice", "设置联系方式 new@example.org")
+    app.conn.execute("UPDATE memberships SET share_contact='new@example.org', share_version=share_version+1 WHERE user_id=(SELECT id FROM users WHERE actor_key='alice')")
+    app.conn.commit()
     output = app.confirm_from("alice", pending)
     assert "联系方式已修改" in output[-1][1]
     assert app.conn.execute("SELECT count(*) FROM contact_requests").fetchone()[0] == 0

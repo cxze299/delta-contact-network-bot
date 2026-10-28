@@ -37,6 +37,10 @@ def test_package(tmp_path):
         assert set(z.namelist()) == {"index.html", "app.js", "style.css", "manifest.toml", "icon.png", "config.js"}
         assert b'"token": ""' in z.read("config.js")
         assert b"fetch(" not in z.read("app.js")
+        import struct
+        assert struct.unpack(">II", z.read("icon.png")[16:24]) == (512, 512)
+        assert "个人应用" not in z.read("app.js").decode("utf-8")
+        assert "个人版" not in z.read("app.js").decode("utf-8")
 
 
 def test_p2p_package_has_no_service_configuration(tmp_path):
@@ -71,6 +75,7 @@ def test_replay_and_stale_confirmation(bridge):
     assert db.execute("SELECT token FROM pending_actions").fetchone()[0] == pending
     b.sync(incoming)
     payload = json.loads(b.rpc.send_webxdc_status_update.call_args.args[2])["payload"]
+    assert json.loads(b.rpc.send_webxdc_status_update.call_args.args[2])["summary"] == "\u00a0"
     assert payload["pending"]["token"] == pending
     assert "payload" not in payload["pending"]
 
@@ -89,12 +94,13 @@ def test_join_wizard(bridge):
     b.service.handle(admin)
     b.service.handle(replace(admin, message_id=101, text="中文 空格 🌿"))
     b.handle(request(incoming, token))
-    for i, value in enumerate(["中文 空格 🌿", "小林", "1", "4"], 2):
+    for i, value in enumerate(["中文 空格 🌿", "小林", "1"], 2):
         pending = b.service.db.connection.execute("SELECT token FROM pending_actions WHERE user_id=(SELECT id FROM users WHERE actor_key='alice')").fetchone()[0]
         b.handle(request(incoming, token, id=str(i), action="reply", step=pending, value=value,
+                         consent=True, discoverable=False, accepts_requests=True,
                          network=b.service.db.connection.execute("SELECT current_network_id FROM users WHERE actor_key='alice'").fetchone()[0]))
     row = b.service.db.connection.execute("SELECT nickname,discoverable,accepts_requests FROM memberships m JOIN users u ON u.id=m.user_id WHERE u.actor_key='alice'").fetchone()
-    assert tuple(row) == ("小林", 1, 1)
+    assert tuple(row) == ("小林", 0, 1)
 
 
 def test_member_cannot_admin(bridge):

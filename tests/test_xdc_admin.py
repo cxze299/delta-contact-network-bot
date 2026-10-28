@@ -1,0 +1,213 @@
+import hashlib
+import hmac
+from dataclasses import replace
+from unittest.mock import Mock
+
+import pytest
+from test_webxdc_flow import Client
+
+from contactbot.database import Database
+from contactbot.service import BotService
+from contactbot.webxdc_bridge import WebxdcBridge
+from contactbot.xdc_admin import make_verifier
+
+
+@pytest.fixture
+def admin_fixture(tmp_path, monkeypatch):
+    secret = "test-administrator-key"
+    monkeypatch.setenv("CONTACTBOT_XDC_ADMIN_VERIFIER", make_verifier(secret))
+    db = Database(tmp_path / "admin.db"); db.initialize()
+    service = BotService(db, b"a-test-key-that-is-long-enough-1234")
+    first, _ = service.seed_network("第一网络", "network-one-secret")
+    second, _ = service.seed_network("第二网络", "network-two-secret")
+    rpc = Mock(); rpc.send_msg.side_effect = range(100, 200)
+    rpc.get_webxdc_status_updates.return_value = "[]"; rpc.get_chat_media.return_value = []
+    bridge = WebxdcBridge(rpc, service)
+    admin = Client(bridge, "system", 10); admin.join("network-one-secret")
+    member = Client(bridge, "member", 20); member.join("network-one-secret")
+    with db.transaction() as conn:
+        conn.execute("UPDATE users SET is_system_admin=1 WHERE actor_key='system'")
+    yield admin, member, secret, first, second
+    db.close()
+
+
+def proof(admin, secret):
+    challenge = admin.snapshot()["admin"]["challenge"]
+    key = hashlib.pbkdf2_hmac("sha256", secret.encode(), bytes.fromhex(challenge["salt"]), challenge["iterations"])
+    return hmac.new(key, ("contact-admin-v1:" + challenge["nonce"] + ":" + admin.token).encode(), hashlib.sha256).hexdigest()
+
+
+def test_system_admin_must_unlock_before_any_admin_operation(admin_fixture):
+    admin, member, secret, _, _ = admin_fixture
+    admin.call(command="网络列表")
+    assert admin.snapshot()["receipt"]["ok"] == 0
+    admin.call("admin_action", operation="create", data={"name": "不允许"})
+    assert admin.db.execute("SELECT COUNT(*) FROM networks").fetchone()[0] == 2
+    admin.call("admin_open")
+    assert admin.snapshot()["admin"]["unlocked"] is False
+    wrong = proof(admin, "incorrect")
+    admin.call("admin_unlock", proof=wrong)
+    assert admin.snapshot()["admin"]["unlocked"] is False
+    correct = proof(admin, secret)
+    admin.call("admin_unlock", proof=correct)
+    state = admin.snapshot()["admin"]
+    assert state["unlocked"] and state["system"] and len(state["networks"]) == 2
+    assert "@example.org" not in str(state)
+    admin.call("admin_action", operation="rename", data={"name": "新网络名"})
+    assert admin.db.execute("SELECT name FROM networks WHERE id=?", (state["current"],)).fetchone()[0] == "新网络名"
+    admin.call("admin_lock")
+    admin.call("admin_action", operation="rename", data={"name": "不允许"})
+    assert admin.db.execute("SELECT name FROM networks WHERE id=?", (state["current"],)).fetchone()[0] == "新网络名"
+    member.call("admin_open")
+    assert member.snapshot()["receipt"]["ok"] == 1
+    assert not member.snapshot()["admin"]["unlocked"]
+
+
+def test_key_attempts_are_rate_limited_and_challenges_not_reusable(admin_fixture):
+    admin, _, secret, _, _ = admin_fixture
+    admin.call("admin_open")
+    stale_proof = proof(admin, secret)
+    admin.call("admin_unlock", proof="0" * 64)
+    admin.call("admin_unlock", proof=stale_proof)
+    assert not admin.snapshot()["admin"]["unlocked"]
+    for _ in range(3):
+        admin.call("admin_unlock", proof="0" * 64)
+    admin.call("admin_unlock", proof=proof(admin, secret))
+    assert not admin.snapshot()["admin"]["unlocked"]
+    assert admin.db.execute("SELECT COUNT(*) FROM rate_events WHERE category='xdc_admin_key'").fetchone()[0] == 5
+
+
+def test_restart_replay_and_key_change_revoke_access(admin_fixture, monkeypatch):
+    admin, _, secret, _, _ = admin_fixture
+    admin.call("admin_open")
+    unlock_message = admin.call("admin_unlock", proof=proof(admin, secret))
+    assert admin.snapshot()["admin"]["unlocked"]
+    restarted = WebxdcBridge(admin.bridge.rpc, admin.bridge.service)
+    restarted.handle(unlock_message)
+    admin.bridge = restarted
+    assert admin.snapshot()["admin"]["unlocked"]
+    monkeypatch.setenv("CONTACTBOT_XDC_ADMIN_VERIFIER", make_verifier("another-test-key"))
+    admin.bridge = WebxdcBridge(admin.bridge.rpc, admin.bridge.service)
+    assert not admin.snapshot()["admin"]["unlocked"]
+
+
+@pytest.mark.parametrize("network_role", ["member", "network_admin"])
+def test_any_member_can_grant_persistent_account_management(admin_fixture, network_role):
+    admin, member, secret, _, _ = admin_fixture
+    with admin.bridge.service.db.transaction() as conn:
+        conn.execute("UPDATE memberships SET role=? WHERE user_id=(SELECT id FROM users WHERE actor_key='member')", (network_role,))
+    member.call("admin_open")
+    state = member.snapshot()["admin"]
+    assert not state["unlocked"]
+    member.call("admin_action", operation="join_off", data={})
+    assert member.snapshot()["receipt"]["ok"] == 0
+    member.call("admin_unlock", proof=proof(member, secret))
+    state = member.snapshot()["admin"]
+    assert state["unlocked"] and state["system"] and len(state["networks"]) == 2
+    other = member.db.execute("SELECT id FROM networks WHERE id<>?", (state["current"],)).fetchone()[0]
+    member.call("admin_select", admin_network=other, page=0)
+    assert member.snapshot()["receipt"]["ok"] == 1
+    member.call("admin_action", operation="join_off", data={})
+    assert member.db.execute("SELECT join_enabled FROM networks WHERE id=?", (other,)).fetchone()[0] == 0
+    assert member.db.execute("SELECT is_system_admin FROM users WHERE actor_key='member'").fetchone()[0] == 0
+    member.call("admin_lock")
+    member.call("admin_action", operation="join_on", data={})
+    assert member.snapshot()["receipt"]["ok"] == 0
+
+
+def test_session_cannot_be_transferred_to_another_instance(admin_fixture):
+    admin, member, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    assert admin.snapshot()["admin"]["unlocked"]
+    attacker = replace(admin.incoming, actor_key=member.incoming.actor_key, contact_id=member.incoming.contact_id, chat_id=member.incoming.chat_id)
+    before = admin.db.execute("SELECT COUNT(*) FROM xdc_admin_sessions").fetchone()[0]
+    admin.bridge.handle(replace(attacker, text=admin.call("refresh").text))
+    assert admin.db.execute("SELECT COUNT(*) FROM xdc_admin_sessions").fetchone()[0] == before
+
+
+def test_revoked_account_and_pending_admin_confirmation_are_blocked(admin_fixture):
+    from contactbot.service import _now
+
+    admin, _, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    with admin.bridge.service.db.transaction() as conn:
+        conn.execute("DELETE FROM xdc_admin_grants")
+        user_id, network_id = conn.execute("SELECT id,current_network_id FROM users WHERE actor_key='system'").fetchone()
+        pending = admin.bridge.service._pending(conn, user_id, "rotate_code", {"network_id": network_id, "code": "unapproved-code"}, _now())
+    admin.call("reply", step=pending, value="1")
+    assert admin.snapshot()["receipt"]["ok"] == 0
+    with admin.bridge.service.db.transaction() as conn:
+        assert admin.bridge.service._find_network_by_code(conn, "unapproved-code") is None
+
+
+def test_key_unlock_does_not_require_persistent_system_role(admin_fixture):
+    admin, _, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    assert admin.snapshot()["admin"]["unlocked"]
+    with admin.bridge.service.db.transaction() as conn:
+        conn.execute("UPDATE users SET is_system_admin=0 WHERE actor_key='system'")
+    admin.call("admin_action", operation="rename", data={"name": "新的名称"})
+    assert admin.snapshot()["receipt"]["ok"] == 1
+    assert admin.snapshot()["admin"]["unlocked"]
+    assert admin.db.execute("SELECT is_system_admin FROM users WHERE actor_key='system'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("operation", ["remove", "ban"])
+def test_removed_members_hidden_and_audit_retained(admin_fixture, operation):
+    admin, member, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    code = member.snapshot()["profile"]["member_code"]
+    admin.call("admin_action", operation=operation, data={"member_code": code, "confirmed": "yes", "reason": "test"})
+    state = admin.snapshot()["admin"]
+    assert code not in {m["member_code"] for m in state["members"]}
+    assert any(a["action"] == operation + "_member" and a["target_ref"] == code for a in state["audit"])
+    assert (code in {m["member_code"] for m in state["bans"]}) == (operation == "ban")
+    if operation == "ban":
+        admin.call("admin_action", operation="unban", data={"member_code": code})
+        assert admin.snapshot()["admin"]["bans"] == []
+        assert code not in {m["member_code"] for m in admin.snapshot()["admin"]["members"]}
+
+
+def test_member_page_clamped_after_list_shrinks(admin_fixture):
+    admin, _, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    current = admin.snapshot()["admin"]["current"]
+    admin.call("admin_select", admin_network=current, page=999)
+    assert admin.snapshot()["admin"]["page"] == 0
+    assert admin.snapshot()["admin"]["members"]
+
+
+def test_grant_survives_new_instance_and_is_account_scoped(admin_fixture):
+    admin, member, secret, _, _ = admin_fixture
+    member.call("admin_open")
+    member.call("admin_unlock", proof=proof(member, secret))
+    with member.bridge.service.db.transaction() as conn:
+        conn.execute("UPDATE xdc_admin_grants SET granted_at='2000-01-01T00:00:00+00:00'")
+    fresh = Client(member.bridge, "member", 20)
+    fresh.call("admin_open")
+    assert fresh.snapshot()["admin"]["unlocked"]
+    assert not admin.snapshot()["admin"]["unlocked"]
+    fresh.call("admin_lock")
+    fresh.call("admin_open")
+    assert not fresh.snapshot()["admin"]["unlocked"]
+
+
+def test_admin_visibility_matches_directory_without_disclosing_hidden_profiles(admin_fixture):
+    admin, member, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    with admin.bridge.service.db.transaction() as conn:
+        conn.execute("UPDATE memberships SET discoverable=0 WHERE user_id=(SELECT id FROM users WHERE actor_key='member')")
+    state = admin.snapshot()
+    hidden = next(m for m in state["admin"]["members"] if m["nickname"] == "member")
+    assert not hidden["discoverable"] and not hidden["is_self"]
+    assert hidden["member_code"] not in {m["member_code"] for m in state["directory"]["members"]}
+    own = next(m for m in state["admin"]["members"] if m["nickname"] == "system")
+    assert own["is_self"]
+
+
+def test_delete_data_revokes_account_grant(admin_fixture):
+    admin, member, secret, _, _ = admin_fixture
+    member.call("admin_open"); member.call("admin_unlock", proof=proof(member, secret))
+    member.call(command="删除我的数据")
+    member.reply("1")
+    assert not member.snapshot()["admin"]["unlocked"]

@@ -17,7 +17,7 @@ class Settings:
     account_id: int | None
     display_name: str = "好友助手"
     rpc_server: str = "deltachat-rpc-server"
-    require_verified: bool = True
+    require_verified: bool = False
     log_level: str = "INFO"
 
     @classmethod
@@ -46,7 +46,7 @@ class Settings:
             display_name=os.environ.get("CONTACTBOT_DISPLAY_NAME", "好友助手").strip()
             or "好友助手",
             rpc_server=os.environ.get("CONTACTBOT_RPC_SERVER", "deltachat-rpc-server"),
-            require_verified=os.environ.get("CONTACTBOT_REQUIRE_VERIFIED", "true").casefold()
+            require_verified=os.environ.get("CONTACTBOT_REQUIRE_VERIFIED", "false").casefold()
             not in {"0", "false", "no"},
             log_level=os.environ.get("CONTACTBOT_LOG_LEVEL", "INFO").upper(),
         )

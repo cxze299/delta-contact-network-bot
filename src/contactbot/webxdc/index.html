@@ -1,1 +1,10 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>联系人网络</title><link rel="stylesheet" href="style.css"><body><header><small>DELTA CHAT · 联系人网络</small><h1>熟悉的网络，新的连接</h1><p id="network">在自己的节奏里认识彼此</p></header><main><div class="notice" id="status">仅在机器人加密私聊中使用。按钮将生成消息，请确认发送，再重新打开小应用。</div><section id="result" aria-live="polite"></section><section id="wizard"></section><section id="page"></section></main><nav id="nav"></nav><script src="webxdc.js"></script><script src="config.js"></script><script src="app.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>好友助手</title><link rel="stylesheet" href="style.css"></head>
+<body>
+  <header class="topbar"><div class="brand"><img class="brand-icon" src="icon.png" alt=""><strong>好友助手</strong></div><button id="refresh" class="quiet" type="button" aria-label="刷新">刷新</button></header>
+  <main><div class="network-bar"><span class="dot" aria-hidden="true"></span><span id="network">尚未连接你的网络</span></div>
+    <p id="status" role="status">正在读取小应用状态…</p><button id="retry" type="button" hidden>重试同步</button><section id="wizard" aria-label="待确认的操作"></section><section id="page" aria-live="polite"></section>
+  </main><nav id="nav" aria-label="主要导航"></nav>
+  <script src="webxdc.js"></script><script src="config.js"></script><script src="app.js"></script>
+</body></html>

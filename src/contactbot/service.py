@@ -21,6 +21,9 @@ class UserError(Exception):
     pass
 
 
+# An outbox marker for a vCard built from the address approved for this exchange.
+APPROVED_CONTACT_VCARD = -1
+
 @dataclass(frozen=True)
 class IncomingMessage:
     account_id: int
@@ -52,6 +55,7 @@ HELP = """好友助手｜帮助
 恢复账号｜删除我的数据
 
 【其他】
+小程序：获取好友助手 Webxdc 应用
 帮助：查看本页
 管理：查看管理员指令"""
 
@@ -85,42 +89,78 @@ class BotService:
             except UserError as exc:
                 self._reply(conn, user["id"], f"无法完成：{exc}", message.message_id)
 
-    def pending_outbox(self, limit: int = 50) -> list[sqlite3.Row]:
+    def pending_outbox(self, limit: int = 50, *, app_ready_only: bool = False) -> list[sqlite3.Row]:
         with self.db.transaction() as conn:
+            app_filter = """AND (o.vcard_contact_id IS NOT NULL OR EXISTS (
+                SELECT 1 FROM xdc_instances x WHERE x.actor_key=u.actor_key
+                AND x.chat_id=u.chat_id AND x.notifications_enabled=1))""" if app_ready_only else ""
             return list(
                 conn.execute(
-                    """SELECT o.*,u.chat_id,u.contact_id FROM outbox o
+                    f"""SELECT o.*,u.chat_id,u.contact_id FROM outbox o
                        JOIN users u ON u.id=o.recipient_user_id
-                       WHERE o.status='pending' ORDER BY o.id LIMIT ?""",
+                       WHERE o.status='pending' {app_filter} ORDER BY o.attempts,o.id LIMIT ?""",
                     (limit,),
                 )
             )
 
     def mark_outbox_sent(self, outbox_id: int) -> None:
         with self.db.transaction() as conn:
-            item = conn.execute("SELECT dedupe_key FROM outbox WHERE id=?", (outbox_id,)).fetchone()
+            self._mark_outbox_sent(conn, outbox_id)
+
+    @staticmethod
+    def _mark_outbox_sent(conn, outbox_id):
+        item = conn.execute("SELECT dedupe_key FROM outbox WHERE id=?", (outbox_id,)).fetchone()
+        if not item:
+            return
+        conn.execute(
+            """UPDATE outbox SET status='sent',body='',vcard_contact_id=NULL,
+               sent_at=?,attempts=attempts+1,last_error=NULL WHERE id=?""", (_now(), outbox_id)
+        )
+        if item["dedupe_key"].startswith(("exchange:", "vcard:")):
+            public_id = item["dedupe_key"].split(":", 2)[1]
+            unfinished = conn.execute("SELECT 1 FROM outbox WHERE (dedupe_key LIKE ? OR dedupe_key LIKE ?) AND status<>'sent'", (f"exchange:{public_id}:%", f"vcard:{public_id}:%")).fetchone()
+            if not unfinished:
+                now = _now()
+                conn.execute("UPDATE contact_requests SET status='completed',completed_at=?,updated_at=? WHERE public_id=? AND status='processing'", (now, now, public_id))
+
+    def send_approved_vcard(self, outbox_id: int, sender) -> bool:
+        """Recheck both consents and serialize delivery with membership changes."""
+        with self.db.transaction() as conn:
+            item = conn.execute("""SELECT o.*,u.chat_id,u.contact_id FROM outbox o JOIN users u ON u.id=o.recipient_user_id WHERE o.id=? AND o.status='pending' AND o.vcard_contact_id=?""", (outbox_id, APPROVED_CONTACT_VCARD)).fetchone()
             if not item:
-                return
-            conn.execute(
-                """UPDATE outbox SET status='sent',body='',vcard_contact_id=NULL,
-                   sent_at=?,attempts=attempts+1,
-                   last_error=NULL WHERE id=?""",
-                (_now(), outbox_id),
-            )
-            if item["dedupe_key"].startswith(("exchange:", "vcard:")):
-                request_public_id = item["dedupe_key"].split(":", 2)[1]
-                unfinished = conn.execute(
-                    """SELECT 1 FROM outbox WHERE
-                       (dedupe_key LIKE ? OR dedupe_key LIKE ?) AND status<>'sent'""",
-                    (f"exchange:{request_public_id}:%", f"vcard:{request_public_id}:%"),
-                ).fetchone()
-                if not unfinished:
-                    now = _now()
-                    conn.execute(
-                        """UPDATE contact_requests SET status='completed',completed_at=?,updated_at=?
-                           WHERE public_id=? AND status='processing'""",
-                        (now, now, request_public_id),
-                    )
+                return False
+            parts = item["dedupe_key"].split(":")
+            if len(parts) != 4 or parts[0] not in {"exchange", "reissue"} or parts[2] not in {"requester", "target"}:
+                raise RuntimeError("无效的名片队列记录")
+            req = conn.execute("""SELECT r.*,n.status network_status,a.status requester_status,b.status target_status,
+                a.user_id requester_user,b.user_id target_user,a.nickname requester_nickname,b.nickname target_nickname,
+                a.share_contact requester_current,b.share_contact target_current,a.share_version requester_version,b.share_version target_version,b.accepts_requests target_accepts
+                FROM contact_requests r JOIN networks n ON n.id=r.network_id
+                JOIN memberships a ON a.id=r.requester_membership_id JOIN memberships b ON b.id=r.target_membership_id
+                WHERE r.public_id=?""", (parts[1],)).fetchone()
+            now = _now()
+            valid = bool(req and ((parts[0] == "exchange" and req["status"] == "processing" and req["expires_at"] > now) or (parts[0] == "reissue" and req["status"] == "completed")) and req["network_status"] == "active"
+                         and req["requester_status"] == req["target_status"] == "active"
+                         and req["requester_contact"] == req["requester_current"] and req["target_contact"] == req["target_current"]
+                         and req["requester_share_version"] == req["requester_version"] and req["target_share_version"] == req["target_version"]
+                         and not self._is_blocked(conn, req["network_id"], req["requester_membership_id"], req["target_membership_id"]))
+            if valid and conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='xdc_auto_exchanges'").fetchone() and conn.execute("SELECT 1 FROM xdc_auto_exchanges WHERE request_id=?", (req["id"],)).fetchone():
+                valid = bool(req["target_accepts"] and conn.execute("SELECT count(*) FROM xdc_auto_share WHERE membership_id IN (?,?)", (req["requester_membership_id"], req["target_membership_id"])).fetchone()[0] == 2)
+            expected_user = req["requester_user"] if req and parts[2] == "requester" else req["target_user"] if req else None
+            if not valid or item["recipient_user_id"] != expected_user:
+                if req:
+                    conn.execute("UPDATE contact_requests SET status='invalid',updated_at=? WHERE id=? AND status='processing'", (now, req["id"]))
+                conn.execute("DELETE FROM outbox WHERE dedupe_key LIKE ? AND status='pending'", (f"{parts[0]}:{parts[1]}:%",))
+                return False
+            address = req["target_contact"] if parts[2] == "requester" else req["requester_contact"]
+            nickname = req["target_nickname"] if parts[2] == "requester" else req["requester_nickname"]
+            source_user = req["target_user"] if parts[2] == "requester" else req["requester_user"]
+            source = conn.execute("SELECT contact_id FROM users WHERE id=?", (source_user,)).fetchone()
+            if not source:
+                raise RuntimeError("授权联系人的账号不可用")
+            sender({**dict(item), "source_contact_id": source["contact_id"]}, address, nickname)
+            self._mark_outbox_sent(conn, outbox_id)
+            return True
 
     def mark_outbox_failed(self, outbox_id: int, error: str) -> None:
         with self.db.transaction() as conn:
@@ -317,7 +357,7 @@ class BotService:
         elif command == "我的资料":
             self._my_profile(conn, user, msg_key)
         elif command in {"编辑昵称", "编辑介绍", "设置联系方式"}:
-            self._edit_profile(conn, user, command, args, now, msg_key)
+            self._edit_profile(conn, user, command, args, now, msg_key, contact_address)
         elif command in {"公开资料", "隐藏资料", "接收申请", "暂停申请"}:
             self._set_privacy(conn, user, command, now, msg_key)
         elif command == "查找":
@@ -999,6 +1039,8 @@ class BotService:
                    ) VALUES(?,?,?,?,1,1,?,?)""",
                 (network["id"], user["id"], member_code, payload["nickname"], now, now),
             )
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='xdc_auto_share'").fetchone():
+            conn.execute("INSERT OR IGNORE INTO xdc_auto_share SELECT id FROM memberships WHERE network_id=? AND user_id=? AND status='active'", (network["id"], user["id"]))
         conn.execute(
             "UPDATE users SET current_network_id=?,updated_at=? WHERE id=?",
             (network["id"], now, user["id"]),
@@ -1074,7 +1116,7 @@ class BotService:
         )
         self._reply(conn, user["id"], text, key)
 
-    def _edit_profile(self, conn, user, command, value, now, key) -> None:
+    def _edit_profile(self, conn, user, command, value, now, key, contact_address="") -> None:
         m, _ = self._current_membership(conn, user)
         if command == "编辑昵称":
             self._validate_nickname(value)
@@ -1086,8 +1128,13 @@ class BotService:
         else:
             if not self._valid_contact(value):
                 raise UserError("请输入有效的 Delta Chat 地址，例如 name@example.org")
+            if not contact_address or value.strip().casefold() != contact_address.strip().casefold():
+                raise UserError("联系方式必须与当前 Delta Chat 账号一致，请使用当前账号")
             field, new_value = "share_contact", value.strip()
         if field == "share_contact":
+            if m["share_contact"] and m["share_contact"].casefold() == new_value.casefold():
+                self._reply(conn, user["id"], "联系方式已保存，无需重复设置。", key)
+                return
             conn.execute(
                 "UPDATE memberships SET share_contact=?,share_version=share_version+1,updated_at=? WHERE id=?",
                 (new_value, now, m["id"]),
@@ -1348,6 +1395,40 @@ class BotService:
         )
         self._guide_next(conn, user, now, f"{key}:next")
 
+    def _exchange_now(self, conn, user, code, now, key):
+        requester, network = self._current_membership(conn, user)
+        target = conn.execute("SELECT * FROM memberships WHERE network_id=? AND member_code=? AND status='active' AND discoverable=1", (network["id"], code.strip().upper())).fetchone()
+        if not target or target["id"] == requester["id"] or network["status"] != "active":
+            raise UserError("该成员当前不可添加")
+        if not requester["share_contact"] or not target["share_contact"]:
+            raise UserError("双方需要先设置联系方式")
+        if not conn.execute("SELECT 1 FROM xdc_auto_share WHERE membership_id=?", (requester["id"],)).fetchone():
+            raise UserError("请先在隐私设置开启自动交换名片")
+        if not target["accepts_requests"] or not conn.execute("SELECT 1 FROM xdc_auto_share WHERE membership_id=?", (target["id"],)).fetchone():
+            raise UserError("对方尚未开启自动交换名片")
+        if self._is_blocked(conn, network["id"], requester["id"], target["id"]):
+            raise UserError("当前无法与该成员交换名片")
+        cutoff = _iso(_parse(now) - timedelta(days=7))
+        if conn.execute("SELECT 1 FROM contact_requests WHERE requester_membership_id=? AND target_membership_id=? AND status='rejected' AND updated_at>?", (requester["id"], target["id"], cutoff)).fetchone():
+            raise UserError("距离上次被拒绝不足 7 天")
+        if not self._rate_allowed(conn, user["actor_key"], "request", 5, 24 * 60, now):
+            raise UserError("今日交换次数已达上限")
+        pending = conn.execute("SELECT id,public_id,status FROM contact_requests WHERE network_id=? AND status IN ('pending_target','processing') AND ((requester_membership_id=? AND target_membership_id=?) OR (requester_membership_id=? AND target_membership_id=?))", (network["id"], requester["id"], target["id"], target["id"], requester["id"])).fetchone()
+        if pending and pending["status"] == "processing":
+            raise UserError("名片正在交付，请稍后查看")
+        if pending:
+            conn.execute("UPDATE contact_requests SET status='invalid',updated_at=? WHERE id=?", (now, pending["id"]))
+            conn.execute("DELETE FROM outbox WHERE status='pending' AND dedupe_key LIKE ?", (f"request-notify:{pending['public_id']}:%",))
+            conn.execute("DELETE FROM pending_actions WHERE action='guide_incoming_request' AND json_extract(payload,'$.request_public_id')=?", (pending["public_id"],))
+        conn.execute("DELETE FROM pending_actions WHERE user_id=? AND action='send_request'", (user["id"],))
+        public_id = self._public_id("R", 8)
+        conn.execute("""INSERT INTO contact_requests(public_id,network_id,requester_membership_id,target_membership_id,reason,requester_contact,requester_share_version,target_contact,target_share_version,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'processing',?,?,?)""", (public_id, network["id"], requester["id"], target["id"], "", requester["share_contact"], requester["share_version"], target["share_contact"], target["share_version"], _iso(_parse(now)+timedelta(days=7)), now, now))
+        request_id = conn.execute("SELECT id FROM contact_requests WHERE public_id=?", (public_id,)).fetchone()[0]
+        conn.execute("INSERT INTO xdc_auto_exchanges VALUES(?)", (request_id,))
+        self._reply(conn, requester["user_id"], "已开始交换名片，请在与好友助手的聊天中查看。", key)
+        for side, recipient in (("requester", requester["user_id"]), ("target", target["user_id"])):
+            self._reply(conn, recipient, "双方已开启自动交换，请打开名片添加好友并核对身份。", f"exchange:{public_id}:{side}", sensitive=True, vcard_contact_id=APPROVED_CONTACT_VCARD)
+
     def _start_request(self, conn, user, args, now, key, guided=False) -> None:
         parts = args.split(maxsplit=1)
         if len(parts) != 2 or not parts[1].strip():
@@ -1571,17 +1652,19 @@ class BotService:
             conn,
             requester_user,
             f"申请 {req['public_id']} 已同意。对方联系方式：{payload['contact']}\n"
-            "请在 Delta Chat 中新建聊天并粘贴这个地址；首次联系时核对加密与验证状态。",
+            "请点击附件中的联系人名片添加，并核对对方身份。",
             f"exchange:{req['public_id']}:requester",
             sensitive=True,
+            vcard_contact_id=APPROVED_CONTACT_VCARD,
         )
         self._reply(
             conn,
             user["id"],
             f"申请 {req['public_id']} 已同意。对方联系方式：{req['requester_contact']}\n"
-            "请在 Delta Chat 中新建聊天并粘贴这个地址；首次联系时核对加密与验证状态。",
+            "请点击附件中的联系人名片添加，并核对对方身份。",
             f"exchange:{req['public_id']}:target",
             sensitive=True,
+            vcard_contact_id=APPROVED_CONTACT_VCARD,
         )
 
     def _reject(self, conn, user, public_id, now, key) -> None:
@@ -1736,6 +1819,8 @@ class BotService:
         )
 
     def _confirm_delete(self, conn, user, payload, now, key) -> None:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='xdc_admin_grants'").fetchone():
+            conn.execute("DELETE FROM xdc_admin_grants WHERE user_id=?", (user["id"],))
         memberships = conn.execute(
             "SELECT id FROM memberships WHERE user_id=?", (user["id"],)
         ).fetchall()
@@ -1757,6 +1842,7 @@ class BotService:
                 (*membership_ids, *membership_ids),
             )
         conn.execute("DELETE FROM pending_actions WHERE user_id=?", (user["id"],))
+        conn.execute("DELETE FROM outbox WHERE recipient_user_id=?", (user["id"],))
         conn.execute("DELETE FROM memberships WHERE user_id=?", (user["id"],))
         conn.execute(
             "UPDATE users SET current_network_id=NULL,updated_at=? WHERE id=?", (now, user["id"])
@@ -1928,13 +2014,16 @@ class BotService:
         ).fetchall()
 
         conn.execute(
-            "UPDATE memberships SET user_id=?,updated_at=? WHERE id=?",
+            "UPDATE memberships SET user_id=?,share_contact='',share_version=share_version+1,updated_at=? WHERE id=?",
             (requester["id"], now, recovery["membership_id"]),
         )
         conn.execute(
             "UPDATE users SET current_network_id=?,updated_at=? WHERE id=?",
             (recovery["network_id"], now, requester["id"]),
         )
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='xdc_auto_share'").fetchone():
+            conn.execute("DELETE FROM xdc_auto_share WHERE membership_id=?", (recovery["membership_id"],))
+        conn.execute("UPDATE contact_requests SET status='invalid',updated_at=? WHERE status IN ('pending_target','processing') AND (requester_membership_id=? OR target_membership_id=?)", (now, recovery["membership_id"], recovery["membership_id"]))
         replacement = conn.execute(
             """SELECT network_id FROM memberships
                WHERE user_id=? AND status='active' AND network_id<>? ORDER BY id LIMIT 1""",
@@ -1965,7 +2054,7 @@ class BotService:
         self._reply(
             conn, requester["id"],
             f"账号恢复成功。你已恢复 {recovery['network_name']} 中的资料和成员编号 "
-            f"{recovery['member_code']}。正在重新发送 {count} 位历史好友的联系人名片。",
+            f"{recovery['member_code']}。请重新确认当前账号并开启自动交换。正在重新发送 {count} 位历史好友的联系人名片。",
             f"recovery-approved:{recovery['public_id']}",
         )
         for contact in historical_contacts:
@@ -2420,6 +2509,8 @@ class BotService:
 
     @staticmethod
     def _invalidate_membership(conn, membership_id, status, now):
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='xdc_auto_share'").fetchone():
+            conn.execute("DELETE FROM xdc_auto_share WHERE membership_id=?", (membership_id,))
         conn.execute(
             """UPDATE memberships SET status=?,role='member',discoverable=0,
                accepts_requests=0,share_contact=NULL,share_link_ciphertext=NULL,

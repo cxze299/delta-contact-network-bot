@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from deltachat2 import Bot, MessageData, NewMsgEvent, Rpc, events
 from deltachat2.types import ChatType, EventTypeSecurejoinInviterProgress
 
 from .config import Settings
-from .service import BotService, IncomingMessage
+from .service import APPROVED_CONTACT_VCARD, BotService, IncomingMessage
+from .webxdc_bridge import WebxdcBridge
 
 
 class DeltaAdapter:
@@ -17,6 +20,8 @@ class DeltaAdapter:
         self.service = service
         self.settings = settings
         self.log = logging.getLogger("contactbot.delta")
+        self._outbox_lock = threading.Lock()
+        self.webxdc = WebxdcBridge(rpc, service, require_verified=settings.require_verified, identity_key=settings.actor_key)
         hooks = events.HookCollection()
         hooks.on(events.NewMessage)(self._on_message)
         hooks.on(
@@ -27,8 +32,45 @@ class DeltaAdapter:
         self.bot = Bot(rpc, hooks)
 
     def run_forever(self, account_id: int) -> None:
-        self._drain_outbox(account_id)
-        self.bot.run_forever(account_id)
+        self._recover_recent_contacts(account_id)
+        stop = threading.Event()
+        worker = threading.Thread(target=self._poll_outbox, args=(account_id, stop), daemon=True)
+        worker.start()
+        try:
+            self.bot.run_forever(account_id)
+        finally:
+            stop.set()
+            worker.join(timeout=5)
+
+    def _recover_recent_contacts(self, account_id: int) -> None:
+        """Offer one app to recent unread chats missed while offline or gated."""
+        try:
+            message_ids = self.rpc.get_fresh_msgs(account_id)[:200]
+        except Exception as exc:  # noqa: BLE001 - recovery must not prevent startup
+            self.log.warning("读取待回复联系人失败（%s）", type(exc).__name__)
+            return
+        seen = set()
+        cutoff = time.time() - 86400
+        for message_id in message_ids:
+            try:
+                msg = self.rpc.get_message(account_id, message_id)
+                if msg.is_info or msg.is_bot or msg.from_id <= 9 or msg.received_timestamp < cutoff or msg.chat_id in seen:
+                    continue
+                seen.add(msg.chat_id)
+                with self.service.db.transaction() as conn:
+                    exists = conn.execute("SELECT 1 FROM xdc_instances WHERE account_id=? AND chat_id=?", (account_id, msg.chat_id)).fetchone()
+                if not exists:
+                    self._on_message(self.bot, account_id, NewMsgEvent(command="", payload="", msg=msg))
+            except Exception as exc:  # noqa: BLE001 - isolate failed contacts without private RPC logs
+                self.log.warning("补发小程序暂未完成，message_id=%s（%s）", message_id, type(exc).__name__)
+
+    def _poll_outbox(self, account_id, stop):
+        while not stop.is_set():
+            try:
+                self._drain_outbox(account_id)
+            except Exception:
+                self.log.exception('待发送队列暂不可用，将自动重试')
+            stop.wait(3)
 
     def _on_message(self, _bot: Bot, account_id: int, event: NewMsgEvent) -> None:
         message = event.msg
@@ -57,8 +99,20 @@ class DeltaAdapter:
             ),
             contact_address=address,
         )
-        self.service.handle(incoming)
-        self._drain_outbox(account_id)
+        with self._outbox_lock:
+            if not incoming.is_private or not incoming.is_encrypted:
+                return
+            if not self.webxdc.handle(incoming):
+                with self.service.db.transaction() as conn:
+                    from .service import _now
+                    if conn.execute("SELECT 1 FROM incoming_messages WHERE account_id=? AND message_id=?", (incoming.account_id, incoming.message_id)).fetchone():
+                        return
+                    self.service._ensure_user(conn, incoming, _now())
+                self.webxdc.offer(incoming, replace=True)
+                with self.service.db.transaction() as conn:
+                    conn.execute("INSERT OR IGNORE INTO incoming_messages(account_id,message_id,processed_at) VALUES(?,?,?)", (incoming.account_id, incoming.message_id, _now()))
+            self._sync_webxdc(account_id)
+            self._drain_outbox_locked(account_id)
 
     def _on_securejoin(
         self, _bot: Bot, account_id: int, event: EventTypeSecurejoinInviterProgress
@@ -87,22 +141,77 @@ class DeltaAdapter:
                 ),
                 contact_address=contact.address,
         )
-        self.service.handle(incoming)
-        self._drain_outbox(account_id)
+        with self._outbox_lock:
+            with self.service.db.transaction() as conn:
+                from .service import _now
+                self.service._ensure_user(conn, incoming, _now())
+            self.webxdc.offer(incoming)
 
     def _drain_outbox(self, account_id: int) -> None:
-        items = self.service.pending_outbox()
+        with self._outbox_lock:
+            self._sync_webxdc(account_id)
+            self._drain_outbox_locked(account_id)
+
+    def _sync_webxdc(self, account_id):
+        try:
+            self.webxdc.sync_all(account_id)
+        except Exception as exc:  # noqa: BLE001 - preserve chat delivery without leaking RPC payloads
+            # RPC errors can contain private update payloads. Do not log them.
+            self.log.warning("小应用同步暂未完成，将重试（%s）", type(exc).__name__)
+
+    def _drain_outbox_locked(self, account_id: int) -> None:
+        items = self.service.pending_outbox(app_ready_only=True)
         for item in items:
             try:
+                if item["vcard_contact_id"] == APPROVED_CONTACT_VCARD:
+                    self.service.send_approved_vcard(
+                        item["id"], lambda queued, address, nickname: self._send_approved_vcard(
+                            account_id, queued, address, nickname
+                        )
+                    )
+                    continue
                 chat = self.rpc.get_basic_chat_info(account_id, item["chat_id"])
                 if item["requires_encryption"] and not chat.is_encrypted:
                     raise RuntimeError("目标私聊当前未加密")
-                self._send_outbox_item(account_id, item)
-            except Exception as exc:
-                self.log.exception("发送待处理消息失败，outbox_id=%s", item["id"])
+                if not self.webxdc.deliver_outbox(account_id, item):
+                    self._send_outbox_item(account_id, item)
+            except Exception as exc:  # noqa: BLE001 - keep failed items in the queue
+                self.log.warning("发送待处理消息失败，outbox_id=%s，错误类型=%s", item["id"], type(exc).__name__)
                 self.service.mark_outbox_failed(item["id"], type(exc).__name__)
             else:
                 self.service.mark_outbox_sent(item["id"])
+
+    def _send_approved_vcard(self, account_id, item, address, nickname):
+        chat = self.rpc.get_basic_chat_info(account_id, item["chat_id"])
+        if (not chat.is_encrypted or chat.chat_type != ChatType.SINGLE
+                or chat.is_device_chat or chat.is_self_talk):
+            raise RuntimeError("目标私聊当前不可用于加密交付")
+        if self.settings.require_verified and not self.rpc.get_contact(account_id, item["contact_id"]).is_verified:
+            raise RuntimeError("目标联系人尚未验证")
+        source_id = item["source_contact_id"]
+        source = self.rpc.get_contact(account_id, source_id)
+        if source.address.strip().casefold() != address.strip().casefold():
+            raise RuntimeError("授权账号与可用的加密联系人不一致")
+        native_card = self.rpc.make_vcard(account_id, [source_id])
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", delete=False) as raw:
+            raw_path = Path(raw.name)
+            raw.write(native_card)
+        try:
+            parsed = self.rpc.parse_vcard(str(raw_path))
+        finally:
+            raw_path.unlink(missing_ok=True)
+        if len(parsed) != 1 or parsed[0].addr.strip().casefold() != address.strip().casefold() or not parsed[0].key:
+            raise RuntimeError("授权联系人缺少可用的加密公钥")
+        vcard = approved_vcard(address, nickname, parsed[0].key)
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", newline="", delete=False) as attachment:
+                path = Path(attachment.name)
+                attachment.write(vcard)
+            self.rpc.send_msg(account_id, item["chat_id"], MessageData(text=item["body"], file=str(path), filename="contact.vcf"))
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
 
     def _send_outbox_item(self, account_id: int, item) -> None:
         attachment_path = None
@@ -122,3 +231,10 @@ class DeltaAdapter:
         finally:
             if attachment_path is not None:
                 attachment_path.unlink(missing_ok=True)
+
+
+def approved_vcard(address: str, nickname: str, public_key: str | None = None) -> str:
+    def escape(value):
+        return value.replace("\\", "\\\\").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n").replace(";", "\\;").replace(",", "\\,")
+    key_line = f"KEY;TYPE=PGP;ENCODING=b:{public_key}\r\n" if public_key else ""
+    return f"BEGIN:VCARD\r\nVERSION:4.0\r\nFN:{escape(nickname)}\r\nEMAIL:{escape(address)}\r\n{key_line}END:VCARD\r\n"
