@@ -1,3 +1,2 @@
-FROM delta-contact-network-bot:settings-fold-20261028
-COPY src/contactbot/service.py src/contactbot/webxdc_bridge.py /venv/lib/python3.12/site-packages/contactbot/
+FROM delta-contact-network-bot:keyboard-codefree-r2-20261028
 COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/

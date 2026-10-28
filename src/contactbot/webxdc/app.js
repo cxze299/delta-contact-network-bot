@@ -308,22 +308,14 @@ function renderFind(page) {
     const card = node("article", null, list, "person"); node("span", person.nickname.slice(0, 1), card, "avatar");
     const content = node("div", null, card);
     node("h3", person.nickname, content); if (person.bio) node("p", person.bio, content, "muted");
-    button(content, selected === person.member_code ? "收起" : "添加", () => { selected = selected === person.member_code ? null : person.member_code; render(); }, "friend-add");
-    if (selected === person.member_code) {
-      const expanded = node("div", null, card, "friend-expanded");
-      const blocked = (state.blocked_members || []).some(m => m.member_code === person.member_code);
-      if (blocked) {
-        button(expanded, "解除屏蔽", () => command("解除屏蔽", person.member_code), "secondary");
-      } else if (!state.profile?.share_contact) {
-        node("p", "请先设置联系方式。", expanded);
-        button(expanded, "去设置联系方式", () => { tab = "我的"; render(); }, "primary");
-      } else {
-        button(expanded, "交换名片", () => send("exchange_now", {value: person.member_code}), "primary");
-      }
-      const more = node("details", null, expanded, "friend-more"); node("summary", "更多操作", more);
-      if (!blocked) button(more, "屏蔽此人", () => command("屏蔽", person.member_code), "danger");
-      form(more, "举报原因", value => command("举报", person.member_code + " " + value), {max: 500, multiline: true, button: "提交举报"});
-    }
+    const blocked = (state.blocked_members || []).some(m => m.member_code === person.member_code);
+    const exchange = button(content, blocked ? "已屏蔽" : "交换名片", () => {
+      if (!state.profile?.share_contact) {
+        tab = "我的"; render(); note("请先设置联系方式。");
+      } else send("exchange_now", {value: person.member_code});
+    }, "primary friend-exchange");
+    exchange.setAttribute("aria-label", blocked ? person.nickname + "已屏蔽" : "与" + person.nickname + "交换名片");
+    exchange.disabled = blocked;
   }
   const paging = node("div", null, page, "pagination");
   if (directory.page > 0) button(paging, "上一页", () => { selected = null; send("directory", {page: directory.page - 1}); });
@@ -418,7 +410,29 @@ function renderMe(page) {
     const row = node("div", null, safety, "setting"); node("span", person.nickname, row);
     button(row, "解除屏蔽", () => command("解除屏蔽", person.member_code));
   }
-  node("p", "可在好友卡片的更多操作中屏蔽或举报。", safety, "muted");
+  const directory = state.directory;
+  if (p && directory) {
+    const label = node("label", "选择好友", safety);
+    const select = node("select", null, label, "safety-select");
+    const empty = node("option", "请选择好友", select); empty.value = "";
+    for (const person of directory.members) {
+      const option = node("option", person.nickname + (person.bio ? " · " + person.bio.slice(0, 24) : ""), select);
+      option.value = person.member_code;
+    }
+    const actions = node("div", null, safety, "actions");
+    const block = button(actions, "屏蔽所选好友", () => { if (select.value) command("屏蔽", select.value); }, "danger");
+    block.disabled = true;
+    const reason = form(safety, "举报原因", value => {
+      if (!select.value) { note("请先选择好友。"); return; }
+      command("举报", select.value + " " + value);
+    }, {max: 500, multiline: true, button: "举报所选好友"});
+    const report = reason.closest("form").querySelector("button"); report.disabled = true;
+    select.onchange = () => { block.disabled = report.disabled = !select.value; };
+    const paging = node("div", null, safety, "pagination");
+    if (directory.page > 0) button(paging, "上一页", () => send("directory", {page: directory.page - 1}));
+    if (directory.page > 0 || directory.has_more) node("span", "第 " + (directory.page + 1) + " 页", paging, "muted");
+    if (directory.has_more) button(paging, "下一页", () => send("directory", {page: directory.page + 1}));
+  } else if (p) button(safety, "加载好友", () => send("directory", {page: 0}));
   button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "退出当前网络", () => command("退出网络"), "danger"); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
   const info = settingsDisclosure(page, "隐私说明与使用帮助"); privacy(info);
   node("p", "仅公开资料的成员会出现在目录中。申请 7 天后过期；双方确认后交换联系方式，请自行核验身份。", info, "muted");
