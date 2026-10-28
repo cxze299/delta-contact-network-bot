@@ -43,7 +43,7 @@ function note(text) {
     $("status").hidden = true;
     const current = document.getElementById("modal-status");
     if (current) current.hidden = true;
-  }, 5000);
+  }, 3000);
 }
 function rememberPending() {
   try {
@@ -759,7 +759,7 @@ if (window.webxdc?.setUpdateListener && bound) {
         adminResultTimer = setTimeout(() => {
           adminResultKey = null;
           document.querySelector(".admin-result")?.remove();
-        }, 15000);
+        }, 3000);
       }
       const showConfirmation = waiting.openMessages && p.receipt.ok && p.pending?.action === "send_request";
       const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
