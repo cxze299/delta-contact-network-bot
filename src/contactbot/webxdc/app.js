@@ -520,7 +520,7 @@ function fitViewport() {
       restingHeight = window.innerHeight; viewportWidth = window.innerWidth;
     }
     const height = viewport?.height || window.innerHeight;
-    const keyboardOpen = (editableFocused() || keyboardScroll !== null) && height < restingHeight - 100;
+    const keyboardOpen = keyboardScroll !== null ? height < restingHeight - 20 : editableFocused() && height < restingHeight - 100;
     if (!keyboardOpen) {
       if (!editableFocused() && keyboardScroll === null) restingHeight = Math.max(height, window.innerHeight);
       document.documentElement.style.setProperty("--app-height", height + "px");
