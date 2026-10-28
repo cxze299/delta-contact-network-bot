@@ -293,7 +293,7 @@ function renderWizard() {
   if (!modal) { w.className = setup ? "card onboarding" : "card confirmation"; node("h2", titles[p.action] || "完成当前操作", w); }
   const reply = (value, extra = {}) => send("reply", {step: p.token, value, ...extra});
   if (p.action === "guide_join_code") {
-    form(w, "网络加入码", value => reply(value), {max: 200, placeholder: "输入管理员提供的加入码", button: "下一步"});
+    form(w, "网络加入码", value => reply(value), {max: 200, placeholder: "粘贴加入码（不是网络名称）", button: "下一步"});
   } else if (p.action === "guide_nickname") {
     node("p", p.network_name || "", w, "muted");
     form(w, "昵称", value => reply(value), {max: 40, placeholder: "输入你希望大家看到的名字", button: "下一步"});
@@ -440,6 +440,13 @@ function renderMe(page) {
   }
   const networks = settingsDisclosure(page, "我的网络");
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
+  if (state.admin?.unlocked) {
+    for (const n of state.admin.networks || []) {
+      if (n.status === "active" && n.join_enabled && !state.networks.some(joined => joined.public_id === n.public_id)) {
+        button(networks, "加入 · " + n.name, () => send("join_managed", {admin_network: n.id}), "primary");
+      }
+    }
+  }
   button(networks, "加入新网络", () => send("join"), "primary");
   const safety = settingsDisclosure(page, "屏蔽、举报与账号");
   const blocked = state.blocked_members || [];
@@ -560,6 +567,11 @@ function renderAdmin(page) {
   if (adminSection === "网络") {
     const card = node("section", null, page, "card");
     node("h2", current.name, card); node("p", current.member_count + " 位成员", card, "muted");
+    const joined = state.networks.find(n => n.public_id === current.public_id);
+    if (current.status === "active") {
+      if (joined) button(card, "进入此网络", () => command("切换网络", current.public_id), "primary");
+      else if (current.join_enabled) button(card, "加入此网络", () => send("join_managed", {admin_network: current.id}), "primary");
+    }
     const row = node("div", null, card, "setting"); node("span", "允许新成员加入", row);
     const toggle = button(row, "", () => adminOperation(current.join_enabled ? "join_off" : "join_on"), "ios-switch");
     toggle.setAttribute("role", "switch"); toggle.setAttribute("aria-label", "允许新成员加入"); toggle.setAttribute("aria-checked", String(Boolean(current.join_enabled))); node("span", null, toggle, "switch-knob");
@@ -638,7 +650,7 @@ function renderAdmin(page) {
 }
 function render() {
   document.body.classList.toggle("admin-mode", tab === "我的" && adminView);
-  const current = state.networks.find(n => n.current); $("network").textContent = current?.name || state.pending?.network_name || "好友助手";
+  const current = state.networks.find(n => n.current); $("network").textContent = state.pending?.network_name ? "正在加入 · " + state.pending.network_name : current?.name || "好友助手";
   const page = $("page"), wizard = $("wizard");
   if (wizard.parentElement === page) page.parentElement.insertBefore(wizard, page);
   renderWizard(); page.replaceChildren();
@@ -656,7 +668,7 @@ function render() {
   } else if (!state.profile && !["我的", "消息"].includes(tab)) {
     node("h1", "加入你的网络", page);
     const card = node("section", null, page, "card onboarding");
-    form(card, "网络加入码", value => send("join", {value}), {max: 200, placeholder: "输入管理员提供的加入码", button: "下一步"});
+    form(card, "网络加入码", value => send("join", {value}), {max: 200, placeholder: "粘贴加入码（不是网络名称）", button: "下一步"});
     node("p", "加入码请勿公开传播。", card, "setup-notice");
   } else if (tab === "我的" && adminView) renderAdmin(page);
   else if (state.profile && !state.profile.share_contact && tab === "好友") {
@@ -808,7 +820,9 @@ if (window.webxdc?.setUpdateListener && bound) {
       const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
       const joiningStep = ["guide_join_code", "guide_nickname", "join"].includes(operationStep);
       const cancelledJoin = p.receipt.ok && joiningStep && (waiting.kind === "cancel_join" || (waiting.kind === "command" && waiting.command === "取消"));
-      const completedJoin = p.receipt.ok && ((waiting.kind === "reply" && operationStep === "join") || ((waiting.kind === "reply" || waiting.kind === "join") && changed && p.profile && (operationStep === "guide_join_code" || waiting.kind === "join")));
+      const completedJoin = p.receipt.ok && ((waiting.kind === "reply" && operationStep === "join") || ((waiting.kind === "reply" || waiting.kind === "join") && changed && p.profile && (operationStep === "guide_join_code" || waiting.kind === "join")) || (waiting.kind === "join_managed" && !p.pending && p.profile));
+      if (p.receipt.ok && waiting.kind === "join_managed") { adminView = false; scrollTop(); }
+      if (p.receipt.ok && waiting.kind === "command" && waiting.command === "切换网络") { tab = "好友"; adminView = false; scrollTop(); }
       if (cancelledJoin) { adminView = false; tab = state.profile ? "我的" : "好友"; scrollTop(); }
       if (completedJoin) { tab = "好友"; adminView = false; scrollTop(); }
       waiting = null; operationFeedback(null); rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;

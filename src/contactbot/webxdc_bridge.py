@@ -173,6 +173,25 @@ class WebxdcBridge:
                     if not pending or pending["action"] not in {"guide_join_code", "guide_nickname", "join"}:
                         raise UserError("该加入步骤已结束，请刷新当前状态")
                     conn.execute("DELETE FROM pending_actions WHERE user_id=? AND token=?", (user["id"], step))
+                elif action == "join_managed":
+                    self.admin.require(conn, user, token, now)
+                    network_id = request.get("admin_network")
+                    if isinstance(network_id, bool) or not isinstance(network_id, int):
+                        raise UserError("请选择要加入的网络")
+                    network = conn.execute("SELECT * FROM networks WHERE id=?", (network_id,)).fetchone()
+                    if not network or network["status"] != "active" or not network["join_enabled"]:
+                        raise UserError("该网络目前不能加入")
+                    existing = conn.execute("SELECT 1 FROM memberships WHERE user_id=? AND network_id=? AND status='active'", (user["id"], network_id)).fetchone()
+                    if existing:
+                        self.service._switch_network(conn, user, network["public_id"], now, key)
+                        conn.execute("DELETE FROM pending_actions WHERE user_id=? AND action IN ('guide_join_code','guide_nickname','join')", (user["id"],))
+                    else:
+                        profile = conn.execute("SELECT nickname FROM memberships WHERE user_id=? AND network_id=? AND status='active'", (user["id"], user["current_network_id"])).fetchone()
+                        payload = {"network_id": network_id, "join_code_hash": network["join_code_hash"], "managed_join": True}
+                        if profile:
+                            payload["nickname"] = profile["nickname"]
+                        self.service._pending(conn, user["id"], "join" if profile else "guide_nickname", payload, now)
+                    onboarding_action = True
                 elif action == "join":
                     onboarding_action = True
                     self.service._pending(conn, user["id"], "guide_join_code", {}, now)
@@ -181,7 +200,7 @@ class WebxdcBridge:
                         self.service._guided_reply(conn, user, pending, value, True, incoming.contact_address, now, key)
                         if conn.execute("SELECT 1 FROM pending_actions WHERE user_id=? AND action='guide_join_code'", (user["id"],)).fetchone():
                             success = False
-                            conn.execute("UPDATE outbox SET body='加入码无效或已停用，请检查后重试。' WHERE dedupe_key=?", (f"{key}:{user['id']}",))
+                            conn.execute("UPDATE outbox SET body='请填写管理员提供的加入码，不是网络名称；也请确认加入码未停用或更换。' WHERE dedupe_key=?", (f"{key}:{user['id']}",))
                     else:
                         self.service._reply(conn, user["id"], "请输入管理员提供的加入码。", key)
                 elif action == "recover_by_name":
@@ -255,6 +274,8 @@ class WebxdcBridge:
                     if not pending:
                         raise UserError("页面已过期，请刷新后重新操作")
                     onboarding_action = pending["action"] in {"guide_join_code", "guide_nickname", "join"}
+                    if json.loads(pending["payload"]).get("managed_join"):
+                        self.admin.require(conn, user, token, now)
                     if pending["action"] in ADMIN_PENDING:
                         self.admin.require(conn, user, token, now)
                     if pending["action"] == "guide_choose_target":
@@ -285,7 +306,7 @@ class WebxdcBridge:
                         self.service._guided_reply(conn, user, pending, value, True, incoming.contact_address, now, key)
                         if pending["action"] == "guide_join_code" and conn.execute("SELECT 1 FROM pending_actions WHERE user_id=? AND action='guide_join_code'", (user["id"],)).fetchone():
                             success = False
-                            conn.execute("UPDATE outbox SET body='加入码无效或已停用，请检查后重试。' WHERE dedupe_key=?", (f"{key}:{user['id']}",))
+                            conn.execute("UPDATE outbox SET body='请填写管理员提供的加入码，不是网络名称；也请确认加入码未停用或更换。' WHERE dedupe_key=?", (f"{key}:{user['id']}",))
                     elif value == "1":
                         self.service._confirm(conn, user, pending["token"], True, now, key)
                     elif value == "2":

@@ -271,3 +271,71 @@ def test_create_network_selects_it_and_creator_can_join_and_switch(admin_fixture
     state = admin.snapshot()
     assert state["current_network"] == previous
     assert state["pending"] is None or state["pending"]["action"] == "guide_next"
+
+
+def test_managed_join_requires_key_and_preserves_original_membership(admin_fixture):
+    admin, member, secret, first, second = admin_fixture
+    second_id = admin.db.execute('SELECT id FROM networks WHERE public_id=?', (second,)).fetchone()[0]
+    original = admin.snapshot()['current_network']
+    for client in (admin, member):
+        client.call('join_managed', admin_network=second_id)
+        assert client.snapshot()['receipt']['ok'] == 0
+        assert len(client.snapshot()['networks']) == 1
+    admin.call('admin_open'); admin.call('admin_unlock', proof=proof(admin, secret))
+    admin.call('join_managed', admin_network=second_id)
+    state = admin.snapshot()
+    assert state['receipt']['ok'] == 1
+    assert state['pending']['action'] == 'join'
+    assert state['pending']['network_name'] == '第二网络'
+    assert state['current_network'] == original
+    admin.call('cancel_join', step=state['pending']['token'])
+    assert admin.snapshot()['pending'] is None
+    assert admin.snapshot()['current_network'] == original
+    admin.call('join_managed', admin_network=second_id)
+    request = admin.reply('1', consent=True, use_current_account=True, discoverable=False, accepts_requests=True)
+    admin.bridge.handle(request)
+    state = admin.snapshot()
+    assert state['receipt']['ok'] == 1 and state['pending'] is None
+    assert state['current_network'] == second_id
+    assert len(state['networks']) == 2
+    assert state['profile']['share_contact'] == admin.incoming.contact_address
+    assert state['profile']['discoverable'] == 0
+    admin.call(command='切换网络', value=first)
+    assert admin.snapshot()['current_network'] == original
+    assert admin.snapshot()['profile']['discoverable'] == 1
+    admin.call('join_managed', admin_network=second_id)
+    assert admin.snapshot()['current_network'] == second_id
+    assert admin.snapshot()['profile']['discoverable'] == 0
+    assert len(admin.snapshot()['networks']) == 2
+
+
+@pytest.mark.parametrize('blocked', ['disabled', 'join_off', 'revoked', 'removed', 'invalid_id'])
+def test_managed_join_cannot_bypass_constraints(admin_fixture, blocked):
+    admin, _, secret, _, second = admin_fixture
+    second_id = admin.db.execute('SELECT id FROM networks WHERE public_id=?', (second,)).fetchone()[0]
+    admin.call('admin_open'); admin.call('admin_unlock', proof=proof(admin, secret))
+    if blocked == 'invalid_id':
+        admin.call('join_managed', admin_network=True)
+    else:
+        admin.call('join_managed', admin_network=second_id)
+        with admin.bridge.service.db.transaction() as conn:
+            if blocked == 'disabled': conn.execute("UPDATE networks SET status='disabled' WHERE id=?", (second_id,))
+            elif blocked == 'join_off': conn.execute('UPDATE networks SET join_enabled=0 WHERE id=?', (second_id,))
+            elif blocked == 'removed': conn.execute('DELETE FROM networks WHERE id=?', (second_id,))
+        if blocked == 'revoked': admin.call('admin_lock')
+        admin.reply('1', consent=True, use_current_account=True, discoverable=True, accepts_requests=True)
+    assert admin.snapshot()['receipt']['ok'] == 0
+    assert len(admin.snapshot()['networks']) == 1
+
+
+def test_new_admin_without_membership_can_join_managed_network(admin_fixture):
+    admin, member, secret, _, second = admin_fixture
+    fresh = Client(admin.bridge, 'newadmin', 30)
+    fresh.call('admin_open'); fresh.call('admin_unlock', proof=proof(fresh, secret))
+    second_id = admin.db.execute('SELECT id FROM networks WHERE public_id=?', (second,)).fetchone()[0]
+    fresh.call('join_managed', admin_network=second_id)
+    assert fresh.snapshot()['pending']['action'] == 'guide_nickname'
+    fresh.reply('新成员')
+    fresh.reply('1', consent=True, use_current_account=True, discoverable=True, accepts_requests=True)
+    assert fresh.snapshot()['current_network'] == second_id
+    assert len(fresh.snapshot()['networks']) == 1
