@@ -34,6 +34,10 @@ def execute(service, conn, actor, network_id, action, data, timestamp, *, verifi
             raise UserError('网络不存在')
     conn.execute('UPDATE users SET current_network_id=? WHERE id=?', (network_id, user['id']))
     try:
+        if action == 'delivery_close':
+            if data.get('confirmed') != 'yes' or not str(data.get('outbox_id', '')).isdigit():
+                raise UserError('请先确认双方已检查聊天中的名片')
+            return service.close_uncertain_delivery(conn, user, network_id, int(data['outbox_id']), timestamp)
         if action == 'create':
             name = data.get('name', '').strip()
             if not 1 <= len(name) <= 60:

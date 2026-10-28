@@ -175,7 +175,7 @@ def start_request_with_current_contact(alice, bob):
     return alice.db.execute("SELECT public_id FROM contact_requests").fetchone()[0]
 
 
-def test_failed_vcard_delivery_remains_queued(clients):
+def test_failed_vcard_delivery_stays_uncertain_and_is_not_retried(clients):
     alice, bob = clients
     alice.join(); bob.join()
     public_id = start_request_with_current_contact(alice, bob)
@@ -186,7 +186,27 @@ def test_failed_vcard_delivery_remains_queued(clients):
         raise RuntimeError("send failed")
     with pytest.raises(RuntimeError):
         service.send_approved_vcard(item["id"], fail)
-    assert alice.db.execute("SELECT status FROM outbox WHERE id=?", (item["id"],)).fetchone()[0] == "pending"
+    assert alice.db.execute("SELECT status FROM outbox WHERE id=?", (item["id"],)).fetchone()[0] == "sending"
+    assert not service.send_approved_vcard(item["id"], lambda *_: pytest.fail("uncertain delivery retried"))
+
+
+def test_commit_failure_after_send_never_retries(clients):
+    alice, bob = clients
+    alice.join(); bob.join()
+    public_id = start_request_with_current_contact(alice, bob)
+    bob.call(command="同意申请", value=public_id); bob.reply("1")
+    service = alice.bridge.service
+    item = next(r for r in service.pending_outbox(200) if r["dedupe_key"].startswith("exchange:"))
+    alice.db.execute("CREATE TRIGGER fail_sent BEFORE UPDATE OF status ON outbox WHEN NEW.status='sent' BEGIN SELECT RAISE(ABORT,'simulated commit failure'); END")
+    alice.db.commit()
+    sent = []
+    with pytest.raises(Exception):
+        service.send_approved_vcard(item["id"], lambda *_: sent.append(True))
+    alice.db.execute("DROP TRIGGER fail_sent"); alice.db.commit()
+    service.mark_outbox_failed(item["id"], "simulated")
+    assert not service.send_approved_vcard(item["id"], lambda *_: sent.append(True))
+    assert sent == [True]
+    assert alice.db.execute("SELECT status FROM outbox WHERE id=?", (item["id"],)).fetchone()[0] == "sending"
 
 
 @pytest.mark.parametrize("change", ["block", "leave", "expire", "contact", "network"])

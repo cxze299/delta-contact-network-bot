@@ -113,3 +113,18 @@ def test_system_create_rotate_role_and_disable_share_database(web):
     assert action('enable').status_code == 200
     assert db.connection.execute('SELECT status FROM networks WHERE id=1').fetchone()[0] == 'active'
     assert db.connection.execute('SELECT current_network_id FROM users WHERE id=1').fetchone()[0] == 2
+
+
+def test_web_delivery_recovery_respects_network_scope(web):
+    client, db, action, _ = web
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO outbox(recipient_user_id,body,dedupe_key,status,created_at,delivery_network_id,delivery_token,delivery_started_at) VALUES(3,'private-test','recovery:test','sending','2026-10-28',1,'token','2026-10-28')")
+        item = conn.execute("SELECT id FROM outbox WHERE dedupe_key='recovery:test'").fetchone()[0]
+    login_network_admin(client, action)
+    page = client.get('/?network=1')
+    assert '待核查名片交付' in page.text and 'private-test' not in page.text
+    assert action('delivery_close', network=2, outbox_id=str(item), confirmed='yes').status_code == 400
+    assert action('delivery_close', outbox_id=str(item), confirmed='no').status_code == 400
+    assert action('delivery_close', outbox_id=str(item), confirmed='yes').status_code == 200
+    row = db.connection.execute('SELECT status,delivery_closed_at,body FROM outbox WHERE id=?',(item,)).fetchone()
+    assert row['status']=='sending' and row['delivery_closed_at'] and not row['body']

@@ -211,3 +211,24 @@ def test_delete_data_revokes_account_grant(admin_fixture):
     member.call(command="删除我的数据")
     member.reply("1")
     assert not member.snapshot()["admin"]["unlocked"]
+
+
+def test_delivery_uncertainty_management_is_scoped_and_never_resends(admin_fixture):
+    admin, member, secret, _, _ = admin_fixture
+    admin.call("exchange_now", value=member.snapshot()["profile"]["member_code"])
+    service = admin.bridge.service
+    item = next(r for r in service.pending_outbox(200) if r["dedupe_key"].startswith("exchange:"))
+    with pytest.raises(TimeoutError):
+        service.send_approved_vcard(item["id"], lambda *_: (_ for _ in ()).throw(TimeoutError()), account_id=1)
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    snapshot = admin.snapshot()["admin"]
+    assert snapshot["deliveries"][0]["id"] == item["id"]
+    network = snapshot["current"]
+    other = next(n["id"] for n in snapshot["networks"] if n["id"] != network)
+    admin.call("admin_select", admin_network=other)
+    admin.call("admin_action", operation="delivery_close", data={"outbox_id": str(item["id"]), "confirmed": "yes"})
+    assert not admin.snapshot()["receipt"]["ok"]
+    admin.call("admin_select", admin_network=network)
+    admin.call("admin_action", operation="delivery_close", data={"outbox_id": str(item["id"]), "confirmed": "yes"})
+    assert admin.snapshot()["receipt"]["ok"] and not admin.snapshot()["admin"]["deliveries"]
+    assert not service.send_approved_vcard(item["id"], lambda *_: pytest.fail("resend"), account_id=1)

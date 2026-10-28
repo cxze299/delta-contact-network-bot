@@ -12,7 +12,7 @@ from .service import UserError, _iso, _parse
 
 ITERATIONS = 250_000
 SYSTEM_ACTIONS = {"create", "rename", "appoint", "revoke", "disable", "enable"}
-NETWORK_ACTIONS = {"view_code", "rotate", "join_off", "join_on", "remove", "ban", "unban", "resolve_report", "approve_recovery", "reject_recovery"}
+NETWORK_ACTIONS = {"view_code", "rotate", "join_off", "join_on", "remove", "ban", "unban", "resolve_report", "approve_recovery", "reject_recovery", "delivery_close"}
 ADMIN_COMMANDS = {
     "管理", "创建网络", "网络概况", "成员列表", "查看加入码", "更换加入码", "停用加入",
     "恢复加入", "移除成员", "封禁成员", "解除封禁", "举报列表", "处理举报", "管理记录",
@@ -182,5 +182,9 @@ class XdcAdmin:
             WHERE r.network_id=? ORDER BY r.id DESC LIMIT 30""", (network_id,))]
         data["recoveries"] = [dict(r) for r in conn.execute("""SELECT ar.public_id,ar.status,ar.expires_at,m.nickname,m.member_code FROM account_recoveries ar
             JOIN memberships m ON m.id=ar.membership_id WHERE m.network_id=? AND ar.status='pending' AND ar.expires_at>? ORDER BY ar.id DESC LIMIT 30""", (network_id, now))]
+        data["deliveries"] = [dict(r) for r in conn.execute("""SELECT o.id,coalesce(r.public_id,'D' || o.id) public_id,coalesce(m.nickname,'成员') recipient,o.delivery_started_at
+            FROM outbox o LEFT JOIN contact_requests r ON o.dedupe_key LIKE 'exchange:' || r.public_id || ':%' OR o.dedupe_key LIKE 'reissue:' || r.public_id || ':%'
+            LEFT JOIN memberships m ON m.user_id=o.recipient_user_id AND m.network_id=o.delivery_network_id
+            WHERE o.delivery_network_id=? AND o.status='sending' AND o.delivery_closed_at IS NULL ORDER BY o.id LIMIT 30""", (network_id,))]
         data["audit"] = [dict(r) for r in conn.execute("SELECT action,target_ref,details,created_at FROM audit_log WHERE network_id=? ORDER BY id DESC LIMIT 30", (network_id,))]
         return data

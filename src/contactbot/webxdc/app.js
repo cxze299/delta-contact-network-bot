@@ -215,7 +215,7 @@ function renderRequests(page) {
   if (!rows.length) node("div", "这里暂时没有申请。收到申请后会显示在这里。", page, "empty muted");
   const names = {pending_target: "等待同意", processing: "正在交付", completed: "已交付", rejected: "未获同意", withdrawn: "已撤销", expired: "已过期", invalid: "已失效"};
   for (const r of rows) {
-    const card = node("article", null, page, "card"); node("span", names[r.status] || "已结束", card, "badge");
+    const card = node("article", null, page, "card"); node("span", r.delivery_uncertain ? "正在核对交付" : names[r.status] || "已结束", card, "badge");
     node("h3", r.direction === "incoming" ? r.sender + " 想认识你" : "发给 " + r.recipient, card); node("p", r.reason || "对方希望与你建立联系", card);
     node("small", r.public_id + " · " + (r.request_kind === "vcard" ? "接收对方联系人名片" : "双方授权交换联系方式"), card, "muted");
     if (r.status === "pending_target") {
@@ -405,6 +405,15 @@ function renderAdmin(page) {
       }
     }
   } else if (adminSection === "审核") {
+    if ((data.deliveries || []).length) {
+      node("h2", "待核查名片交付", page);
+      for (const d of data.deliveries) {
+        const card = node("section", null, page, "card"); node("h3", d.recipient + " · " + d.public_id, card);
+        node("p", "系统正在核对已发送记录，不会自动重复发送。", card);
+        button(card, "刷新核对结果", () => send("refresh"));
+        button(card, "结束此交换", () => adminOperation("delivery_close", {outbox_id: String(d.id)}, "请先让双方检查聊天中的名片。结束后不会重发；确实未收到时可重新发起交换。"), "danger");
+      }
+    }
     node("h2", "待处理举报", page);
     const reports = (data.reports || []).filter(r => r.status === "open");
     if (!reports.length) node("p", "暂无待处理举报。", page, "muted");
@@ -420,7 +429,7 @@ function renderAdmin(page) {
       adminButtonGroup(card, [["批准恢复", () => adminOperation("approve_recovery", {recovery_id: r.public_id}, "确认已核实 " + r.nickname + " 的身份？"), "primary"], ["拒绝", () => adminOperation("reject_recovery", {recovery_id: r.public_id}, "确定拒绝该恢复申请？"), "danger"]]);
     }
   } else if (adminSection === "记录") {
-    const names = {"web:view_join_code":"查看加入码", "create_network":"创建网络", "rename_network":"修改网络名称", "set_role":"更改管理员", "remove_member":"移除成员", "ban_member":"封禁成员", "unban_member":"解除封禁", "rotate_join_code":"更换加入码", "enable_network":"恢复网络", "disable_network":"停用网络", "approve_account_recovery":"批准账号恢复", "reject_account_recovery":"拒绝账号恢复"};
+    const names = {"web:view_join_code":"查看加入码", "create_network":"创建网络", "rename_network":"修改网络名称", "set_role":"更改管理员", "remove_member":"移除成员", "ban_member":"封禁成员", "unban_member":"解除封禁", "rotate_join_code":"更换加入码", "enable_network":"恢复网络", "disable_network":"停用网络", "approve_account_recovery":"批准账号恢复", "reject_account_recovery":"拒绝账号恢复", "merge_duplicate_identity":"自动合并账号", "close_uncertain_delivery":"结束待核查交付"};
     if (!(data.audit || []).length) node("div", "暂无管理记录。", page, "empty muted");
     for (const a of data.audit || []) { const card = node("div", null, page, "card admin-audit"); node("strong", names[a.action] || "管理操作", card); if (a.target_ref) node("p", a.target_ref, card); node("small", (a.created_at || "").replace("T", " ").slice(0, 16), card, "muted"); }
   } else if (adminSection === "系统") {

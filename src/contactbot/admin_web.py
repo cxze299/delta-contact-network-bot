@@ -45,7 +45,7 @@ def create_admin_app(settings: Settings, token: str | None = None) -> FastAPI:
         with database.transaction() as conn:
             if hmac.compare_digest(username, 'admin') and hmac.compare_digest(password, admin_token):
                 configured = os.environ.get('CONTACTBOT_ADMIN_WEB_USER_ID')
-                return conn.execute('SELECT * FROM users WHERE is_system_admin=1 AND (? IS NULL OR id=?) ORDER BY id LIMIT 1', (configured, configured)).fetchone()
+                return conn.execute('SELECT * FROM users WHERE is_system_admin=1 AND merged_into IS NULL AND (? IS NULL OR id=(SELECT coalesce(merged_into,id) FROM users WHERE id=?)) ORDER BY id LIMIT 1', (configured, configured)).fetchone()
             if username.startswith('user-') and username[5:].isdigit():
                 row = conn.execute('SELECT u.*,w.password_hash FROM web_admin_logins w JOIN users u ON u.id=w.user_id WHERE u.id=?', (int(username[5:]),)).fetchone()
                 if row and password_matches(password, row['password_hash']):
@@ -120,6 +120,7 @@ def create_admin_app(settings: Settings, token: str | None = None) -> FastAPI:
             report_count = 0
             reports = []
             requests = []
+            deliveries = []
             logs = []
             total_members = 0
             if selected:
@@ -154,6 +155,8 @@ def create_admin_app(settings: Settings, token: str | None = None) -> FastAPI:
                     "SELECT public_id,status,created_at,expires_at FROM contact_requests WHERE network_id=? ORDER BY id DESC LIMIT 20",
                     (selected['id'],),
                 ).fetchall()
+                deliveries = conn.execute("""SELECT o.id,coalesce(r.public_id,'D' || o.id) public_id FROM outbox o LEFT JOIN contact_requests r ON o.dedupe_key LIKE 'exchange:' || r.public_id || ':%' OR o.dedupe_key LIKE 'reissue:' || r.public_id || ':%'
+                    WHERE o.delivery_network_id=? AND o.status='sending' AND o.delivery_closed_at IS NULL ORDER BY o.id LIMIT 30""", (selected['id'],)).fetchall()
                 logs = conn.execute(
                     "SELECT action,target_ref,created_at FROM audit_log WHERE network_id=? ORDER BY id DESC LIMIT 30",
                     (selected['id'],),
@@ -172,7 +175,7 @@ def create_admin_app(settings: Settings, token: str | None = None) -> FastAPI:
 
         def action_form(action, label, fields='', net_id=None):
             nid = net_id if net_id is not None else (selected['id'] if selected else '')
-            confirmation = '<label class="confirm"><input type="checkbox" name="confirmed" value="yes" required>已核实并确认操作</label>' if action in {'ban','remove','disable','approve_recovery','reject_recovery'} else ''
+            confirmation = '<label class="confirm"><input type="checkbox" name="confirmed" value="yes" required>已核实并确认操作</label>' if action in {'ban','remove','disable','approve_recovery','reject_recovery','delivery_close'} else ''
             return f'<form method="post" action="/action"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="network_id" value="{nid}"><input type="hidden" name="action" value="{action}">{fields}{confirmation}<button>{label}</button></form>'
 
         def member_actions(member):
@@ -250,6 +253,9 @@ def create_admin_app(settings: Settings, token: str | None = None) -> FastAPI:
             status_labels = {'pending_target':'等待同意','processing':'交换中','completed':'已完成','rejected':'已拒绝','withdrawn':'已撤销','expired':'已过期','invalid':'已终止'}
             request_rows = ''.join(f"<tr><td>{html.escape(r['public_id'])}</td><td>{status_labels.get(r['status'], html.escape(r['status']))}</td><td>{html.escape(r['created_at'][:16])}</td></tr>" for r in requests)
             detail += f'<section class="card" id="requests"><h2>联系申请</h2><p class="muted">最近 20 条 · 仅显示状态，不展示联系方式及申请理由。</p><div class="table-wrap"><table><thead><tr><th>编号</th><th>状态</th><th>创建时间（UTC）</th></tr></thead><tbody>{request_rows or "<tr><td colspan=3>暂无申请</td></tr>"}</tbody></table></div></section>'
+            if deliveries:
+                delivery_forms = ''.join('<h3>' + html.escape(d['public_id']) + '</h3>' + action_form('delivery_close', '结束交换，不重发', '<input type="hidden" name="outbox_id" value="' + str(d['id']) + '">') for d in deliveries)
+                detail += '<section class="card"><h2>待核查名片交付</h2><p>系统会自动核对 Core 已发送记录，不会重复发送。请双方检查聊天中的名片后再结束交换；确实未收到时可重新发起。</p>' + delivery_forms + '</section>'
             report_rows = ''
             for r in reports:
                 resolve = f'<form method="post" action="/report/{r["id"]}"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="network_id" value="{selected["id"]}"><label>处理说明<input name="resolution" required maxlength="300"></label><button>标记已处理</button></form>' if r['status'] == 'open' else f'<p>处理结果：{html.escape(r["resolution"])}</p>'

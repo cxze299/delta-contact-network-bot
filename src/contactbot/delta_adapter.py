@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 import tempfile
 import threading
 import time
@@ -9,6 +10,8 @@ from pathlib import Path
 from deltachat2 import Bot, MessageData, NewMsgEvent, Rpc, events
 from deltachat2.types import ChatType, EventTypeSecurejoinInviterProgress
 
+from .delivery import DeliveryNotStarted, filename as delivery_filename
+from .identity import public_key_fingerprint
 from .config import Settings
 from .service import APPROVED_CONTACT_VCARD, BotService, IncomingMessage
 from .webxdc_bridge import WebxdcBridge
@@ -21,7 +24,7 @@ class DeltaAdapter:
         self.settings = settings
         self.log = logging.getLogger("contactbot.delta")
         self._outbox_lock = threading.Lock()
-        self.webxdc = WebxdcBridge(rpc, service, require_verified=settings.require_verified, identity_key=settings.actor_key)
+        self.webxdc = WebxdcBridge(rpc, service, require_verified=settings.require_verified, identity_key=settings.actor_key, identity_resolver=self._identity_message)
         hooks = events.HookCollection()
         hooks.on(events.NewMessage)(self._on_message)
         hooks.on(
@@ -32,6 +35,7 @@ class DeltaAdapter:
         self.bot = Bot(rpc, hooks)
 
     def run_forever(self, account_id: int) -> None:
+        self._refresh_identity_bindings(account_id)
         self._recover_recent_contacts(account_id)
         stop = threading.Event()
         worker = threading.Thread(target=self._poll_outbox, args=(account_id, stop), daemon=True)
@@ -41,6 +45,45 @@ class DeltaAdapter:
         finally:
             stop.set()
             worker.join(timeout=5)
+
+    def _identity_message(self, incoming):
+        if not incoming.is_private or not incoming.is_encrypted:
+            return incoming
+        try:
+            contact = self.rpc.get_contact(incoming.account_id, incoming.contact_id)
+            if contact.is_verified is not True or contact.address.strip().casefold() != incoming.contact_address.strip().casefold():
+                return incoming
+            card = self.rpc.make_vcard(incoming.account_id, [incoming.contact_id])
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", delete=False) as raw:
+                path = Path(raw.name); raw.write(card)
+            try:
+                parsed = self.rpc.parse_vcard(str(path))
+            finally:
+                path.unlink(missing_ok=True)
+            if len(parsed) != 1 or parsed[0].addr.strip().casefold() != incoming.contact_address.strip().casefold() or not parsed[0].key:
+                return incoming
+            return replace(incoming, identity_fingerprint=public_key_fingerprint(parsed[0].key), identity_verified=True)
+        except Exception as exc:
+            self.log.warning("读取加密身份暂未完成（%s）", type(exc).__name__)
+            return incoming
+
+    def _refresh_identity_bindings(self, account_id):
+        from .service import _now
+        with self.service.db.transaction() as conn:
+            users = list(conn.execute("SELECT DISTINCT contact_id,chat_id FROM users WHERE contact_id>0 AND merged_into IS NULL AND core_account_id IN (0,?)", (account_id,)))
+        for user in users:
+            try:
+                chat = self.rpc.get_basic_chat_info(account_id, user["chat_id"])
+                if not chat.is_encrypted or chat.chat_type != ChatType.SINGLE or chat.is_device_chat or chat.is_self_talk:
+                    continue
+                contact = self.rpc.get_contact(account_id, user["contact_id"])
+                incoming = IncomingMessage(account_id, 0, self.settings.actor_key(contact.address), user["contact_id"], user["chat_id"], "", True, True, contact_address=contact.address)
+                incoming = self._identity_message(incoming)
+                if incoming.identity_verified:
+                    with self.service.db.transaction() as conn:
+                        self.service._ensure_user(conn, incoming, _now())
+            except Exception as exc:
+                self.log.warning("账号归并检查将于下次交互重试（%s）", type(exc).__name__)
 
     def _recover_recent_contacts(self, account_id: int) -> None:
         """Offer one app to recent unread chats missed while offline or gated."""
@@ -99,9 +142,13 @@ class DeltaAdapter:
             ),
             contact_address=address,
         )
+        incoming = self._identity_message(incoming)
         with self._outbox_lock:
             if not incoming.is_private or not incoming.is_encrypted:
                 return
+            with self.service.db.transaction() as conn:
+                from .service import _now
+                self.service._ensure_user(conn, incoming, _now())
             if not self.webxdc.handle(incoming):
                 with self.service.db.transaction() as conn:
                     from .service import _now
@@ -141,6 +188,7 @@ class DeltaAdapter:
                 ),
                 contact_address=contact.address,
         )
+        incoming = self._identity_message(incoming)
         with self._outbox_lock:
             with self.service.db.transaction() as conn:
                 from .service import _now
@@ -160,6 +208,7 @@ class DeltaAdapter:
             self.log.warning("小应用同步暂未完成，将重试（%s）", type(exc).__name__)
 
     def _drain_outbox_locked(self, account_id: int) -> None:
+        self._reconcile_deliveries(account_id)
         items = self.service.pending_outbox(app_ready_only=True)
         for item in items:
             try:
@@ -167,8 +216,11 @@ class DeltaAdapter:
                     self.service.send_approved_vcard(
                         item["id"], lambda queued, address, nickname: self._send_approved_vcard(
                             account_id, queued, address, nickname
-                        )
+                        ), account_id=account_id
                     )
+                    continue
+                if item["vcard_contact_id"] is not None:
+                    self.service.send_native_vcard(item["id"], lambda queued: self._send_outbox_item(account_id, queued), account_id)
                     continue
                 chat = self.rpc.get_basic_chat_info(account_id, item["chat_id"])
                 if item["requires_encryption"] and not chat.is_encrypted:
@@ -181,53 +233,83 @@ class DeltaAdapter:
             else:
                 self.service.mark_outbox_sent(item["id"])
 
+    def _reconcile_deliveries(self, account_id):
+        last = getattr(self, "_delivery_checks", {})
+        self._delivery_checks = last
+        for item in self.service.uncertain_deliveries(account_id):
+            if time.monotonic() - last.get(item["id"], -1000) < 15:
+                continue
+            last[item["id"]] = time.monotonic()
+            try:
+                chat_id = item["delivery_chat_id"]
+                expected = delivery_filename(item["delivery_token"])
+                ids = [item["core_message_id"]] if item["core_message_id"] else self.rpc.get_message_ids(account_id, chat_id, False, False)
+                for message_id in reversed(ids):
+                    message = self.rpc.get_message(account_id, message_id)
+                    if message.from_id == 1 and message.chat_id == chat_id and message.file_name == expected:
+                        self.service.reconcile_delivery(item["id"], item["delivery_token"], message_id)
+                        break
+            except Exception as exc:
+                self.log.warning("名片交付状态核对将重试（%s）", type(exc).__name__)
+
     def _send_approved_vcard(self, account_id, item, address, nickname):
-        chat = self.rpc.get_basic_chat_info(account_id, item["chat_id"])
-        if (not chat.is_encrypted or chat.chat_type != ChatType.SINGLE
-                or chat.is_device_chat or chat.is_self_talk):
-            raise RuntimeError("目标私聊当前不可用于加密交付")
-        if self.settings.require_verified and not self.rpc.get_contact(account_id, item["contact_id"]).is_verified:
-            raise RuntimeError("目标联系人尚未验证")
-        source_id = item["source_contact_id"]
-        source = self.rpc.get_contact(account_id, source_id)
-        if source.address.strip().casefold() != address.strip().casefold():
-            raise RuntimeError("授权账号与可用的加密联系人不一致")
-        native_card = self.rpc.make_vcard(account_id, [source_id])
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", delete=False) as raw:
-            raw_path = Path(raw.name)
-            raw.write(native_card)
-        try:
-            parsed = self.rpc.parse_vcard(str(raw_path))
-        finally:
-            raw_path.unlink(missing_ok=True)
-        if len(parsed) != 1 or parsed[0].addr.strip().casefold() != address.strip().casefold() or not parsed[0].key:
-            raise RuntimeError("授权联系人缺少可用的加密公钥")
-        vcard = approved_vcard(address, nickname, parsed[0].key)
         path = None
         try:
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", newline="", delete=False) as attachment:
-                path = Path(attachment.name)
-                attachment.write(vcard)
-            self.rpc.send_msg(account_id, item["chat_id"], MessageData(text=item["body"], file=str(path), filename="contact.vcf"))
+            try:
+                chat = self.rpc.get_basic_chat_info(account_id, item["chat_id"])
+                if (not chat.is_encrypted or chat.chat_type != ChatType.SINGLE
+                        or chat.is_device_chat or chat.is_self_talk):
+                    raise RuntimeError("目标私聊不可用于加密交付")
+                if self.settings.require_verified and not self.rpc.get_contact(account_id, item["contact_id"]).is_verified:
+                    raise RuntimeError("目标联系人尚未验证")
+                source_id = item["source_contact_id"]
+                source = self.rpc.get_contact(account_id, source_id)
+                if source.address.strip().casefold() != address.strip().casefold():
+                    raise RuntimeError("授权账号与可用联系人不一致")
+                native_card = self.rpc.make_vcard(account_id, [source_id])
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", delete=False) as raw:
+                    raw_path = Path(raw.name); raw.write(native_card)
+                try:
+                    parsed = self.rpc.parse_vcard(str(raw_path))
+                finally:
+                    raw_path.unlink(missing_ok=True)
+                if len(parsed) != 1 or parsed[0].addr.strip().casefold() != address.strip().casefold() or not parsed[0].key:
+                    raise RuntimeError("授权联系人缺少可用公钥")
+                vcard = approved_vcard(address, nickname, parsed[0].key)
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", newline="", delete=False) as attachment:
+                    path = Path(attachment.name); attachment.write(vcard)
+                name = delivery_filename(item["delivery_token"]) if item.get("delivery_token") else "contact.vcf"
+                data = MessageData(text=item["body"], file=str(path), filename=name)
+            except Exception as exc:
+                raise DeliveryNotStarted(type(exc).__name__) from None
+            # From this point any exception is ambiguous. Never retry send_msg
+            # until the existing Core message has been reconciled.
+            return self.rpc.send_msg(account_id, item["chat_id"], data)
         finally:
             if path is not None:
                 path.unlink(missing_ok=True)
 
-    def _send_outbox_item(self, account_id: int, item) -> None:
+    def _send_outbox_item(self, account_id: int, item) -> int:
         attachment_path = None
         try:
-            message_data = MessageData(text=item["body"])
-            if item["vcard_contact_id"] is not None:
-                vcard = self.rpc.make_vcard(account_id, [item["vcard_contact_id"]])
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".vcf", encoding="utf-8", delete=False
-                ) as attachment:
-                    attachment.write(vcard)
-                    attachment_path = Path(attachment.name)
-                message_data = MessageData(
-                    text=item["body"], file=str(attachment_path), filename="contact.vcf"
-                )
-            self.rpc.send_msg(account_id, item["chat_id"], message_data)
+            try:
+                message_data = MessageData(text=item["body"])
+                if item["vcard_contact_id"] is not None:
+                    # Direct test callers have no durable delivery token.
+                    if item.get("delivery_token"):
+                        chat = self.rpc.get_basic_chat_info(account_id, item["chat_id"])
+                        if not chat.is_encrypted or chat.chat_type != ChatType.SINGLE or chat.is_device_chat or chat.is_self_talk:
+                            raise RuntimeError("目标私聊不可用于加密交付")
+                    vcard = self.rpc.make_vcard(account_id, [item["vcard_contact_id"]])
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", encoding="utf-8", delete=False) as attachment:
+                        attachment.write(vcard); attachment_path = Path(attachment.name)
+                    name = delivery_filename(item["delivery_token"]) if item.get("delivery_token") else "contact.vcf"
+                    message_data = MessageData(text=item["body"], file=str(attachment_path), filename=name)
+            except Exception as exc:
+                if item["vcard_contact_id"] is not None:
+                    raise DeliveryNotStarted(type(exc).__name__) from None
+                raise
+            return self.rpc.send_msg(account_id, item["chat_id"], message_data)
         finally:
             if attachment_path is not None:
                 attachment_path.unlink(missing_ok=True)

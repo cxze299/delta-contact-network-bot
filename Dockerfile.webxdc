@@ -1,0 +1,2 @@
+FROM delta-contact-network-bot:reliability-20261028
+COPY src/contactbot/ /venv/lib/python3.12/site-packages/contactbot/

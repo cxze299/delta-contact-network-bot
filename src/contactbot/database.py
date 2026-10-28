@@ -60,7 +60,20 @@ class Database:
             self.connection.execute(
                 "DELETE FROM pending_actions WHERE action='guide_share_link'"
             )
-            self.connection.execute("PRAGMA user_version = 6")
+            user_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(users)")}
+            if "core_account_id" not in user_columns:
+                self.connection.execute("ALTER TABLE users ADD COLUMN core_account_id INTEGER NOT NULL DEFAULT 0")
+            if "merged_into" not in user_columns:
+                self.connection.execute("ALTER TABLE users ADD COLUMN merged_into INTEGER REFERENCES users(id)")
+            self.connection.execute("""CREATE TABLE IF NOT EXISTS identity_bindings (
+                account_id INTEGER NOT NULL,contact_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                updated_at TEXT NOT NULL,PRIMARY KEY(account_id,contact_id,chat_id,fingerprint,user_id))""")
+            self.connection.execute("CREATE INDEX IF NOT EXISTS identity_fingerprint_lookup ON identity_bindings(account_id,fingerprint)")
+            for column, definition in (("delivery_token", "TEXT"), ("delivery_started_at", "TEXT"), ("core_message_id", "INTEGER"), ("delivery_account_id", "INTEGER"), ("delivery_chat_id", "INTEGER"), ("delivery_closed_at", "TEXT"), ("delivery_network_id", "INTEGER")):
+                if column not in columns:
+                    self.connection.execute(f"ALTER TABLE outbox ADD COLUMN {column} {definition}")
+            self.connection.execute("PRAGMA user_version = 7")
             self.connection.commit()
 
     @contextmanager

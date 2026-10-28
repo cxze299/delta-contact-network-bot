@@ -36,6 +36,8 @@ class IncomingMessage:
     is_encrypted: bool
     bootstrap_admin: bool = False
     contact_address: str = ""
+    identity_fingerprint: str = ""
+    identity_verified: bool = False
 
 
 HELP = """好友助手｜帮助
@@ -123,10 +125,42 @@ class BotService:
                 now = _now()
                 conn.execute("UPDATE contact_requests SET status='completed',completed_at=?,updated_at=? WHERE public_id=? AND status='processing'", (now, now, public_id))
 
-    def send_approved_vcard(self, outbox_id: int, sender) -> bool:
-        """Recheck both consents and serialize delivery with membership changes."""
+    def _claim_delivery(self, outbox_id, account_id, approved):
         with self.db.transaction() as conn:
-            item = conn.execute("""SELECT o.*,u.chat_id,u.contact_id FROM outbox o JOIN users u ON u.id=o.recipient_user_id WHERE o.id=? AND o.status='pending' AND o.vcard_contact_id=?""", (outbox_id, APPROVED_CONTACT_VCARD)).fetchone()
+            item = conn.execute("SELECT o.*,u.chat_id,u.current_network_id FROM outbox o JOIN users u ON u.id=o.recipient_user_id WHERE o.id=? AND o.status='pending' AND o.vcard_contact_id IS NOT NULL", (outbox_id,)).fetchone()
+            if not item or (item["vcard_contact_id"] == APPROVED_CONTACT_VCARD) != approved:
+                return False
+            parts = item["dedupe_key"].split(":")
+            req = conn.execute("SELECT network_id FROM contact_requests WHERE public_id=?", (parts[1],)).fetchone() if len(parts) > 1 else None
+            conn.execute("""UPDATE outbox SET status='sending',delivery_token=coalesce(delivery_token,?),delivery_started_at=?,delivery_account_id=?,delivery_chat_id=?,delivery_network_id=?,last_error=NULL WHERE id=?""", (secrets.token_hex(16), _now(), account_id, item["chat_id"], req[0] if req else item["current_network_id"], outbox_id))
+            return True
+
+    def send_native_vcard(self, outbox_id, sender, account_id):
+        from .delivery import DeliveryNotStarted
+        if not self._claim_delivery(outbox_id, account_id, False):
+            return False
+        with self.db.transaction() as conn:
+            item = conn.execute("SELECT o.*,u.chat_id,u.contact_id FROM outbox o JOIN users u ON u.id=o.recipient_user_id WHERE o.id=? AND o.status='sending' AND o.delivery_closed_at IS NULL", (outbox_id,)).fetchone()
+            if not item:
+                return False
+            try:
+                core_id = sender(dict(item))
+            except DeliveryNotStarted:
+                conn.execute("UPDATE outbox SET status='pending',attempts=attempts+1,last_error='preflight_failed',delivery_started_at=NULL WHERE id=?", (outbox_id,))
+                return False
+            if isinstance(core_id, int) and not isinstance(core_id, bool):
+                conn.execute("UPDATE outbox SET core_message_id=? WHERE id=?", (core_id, outbox_id))
+            self._mark_outbox_sent(conn, outbox_id)
+            return True
+
+    def send_approved_vcard(self, outbox_id: int, sender, account_id: int | None = None) -> bool:
+        """Recheck both consents and serialize delivery with membership changes."""
+        # Commit the claim before calling Core. If the process dies after Core
+        # accepts the message, an uncertain delivery must never be resent.
+        if not self._claim_delivery(outbox_id, account_id, True):
+            return False
+        with self.db.transaction() as conn:
+            item = conn.execute("""SELECT o.*,u.chat_id,u.contact_id FROM outbox o JOIN users u ON u.id=o.recipient_user_id WHERE o.id=? AND o.status='sending' AND o.delivery_closed_at IS NULL AND o.vcard_contact_id=?""", (outbox_id, APPROVED_CONTACT_VCARD)).fetchone()
             if not item:
                 return False
             parts = item["dedupe_key"].split(":")
@@ -151,6 +185,7 @@ class BotService:
                 if req:
                     conn.execute("UPDATE contact_requests SET status='invalid',updated_at=? WHERE id=? AND status='processing'", (now, req["id"]))
                 conn.execute("DELETE FROM outbox WHERE dedupe_key LIKE ? AND status='pending'", (f"{parts[0]}:{parts[1]}:%",))
+                conn.execute("DELETE FROM outbox WHERE id=? AND status='sending'", (outbox_id,))
                 return False
             address = req["target_contact"] if parts[2] == "requester" else req["requester_contact"]
             nickname = req["target_nickname"] if parts[2] == "requester" else req["requester_nickname"]
@@ -158,16 +193,53 @@ class BotService:
             source = conn.execute("SELECT contact_id FROM users WHERE id=?", (source_user,)).fetchone()
             if not source:
                 raise RuntimeError("授权联系人的账号不可用")
-            sender({**dict(item), "source_contact_id": source["contact_id"]}, address, nickname)
+            from .delivery import DeliveryNotStarted
+            try:
+                core_id = sender({**dict(item), "source_contact_id": source["contact_id"]}, address, nickname)
+            except DeliveryNotStarted:
+                # No send RPC was made. Commit the safe retry rather than leaving
+                # an ambiguous claim. The next poll must recheck consent again.
+                conn.execute("UPDATE outbox SET status='pending',attempts=attempts+1,last_error='preflight_failed',delivery_started_at=NULL WHERE id=?", (outbox_id,))
+                return False
+            if isinstance(core_id, int) and not isinstance(core_id, bool):
+                conn.execute("UPDATE outbox SET core_message_id=? WHERE id=?", (core_id, outbox_id))
             self._mark_outbox_sent(conn, outbox_id)
             return True
 
     def mark_outbox_failed(self, outbox_id: int, error: str) -> None:
         with self.db.transaction() as conn:
             conn.execute(
-                "UPDATE outbox SET status='pending',attempts=attempts+1,last_error=? WHERE id=?",
+                "UPDATE outbox SET attempts=attempts+1,last_error=? WHERE id=? AND status IN ('pending','sending')",
                 (error[:300], outbox_id),
             )
+
+    def uncertain_deliveries(self, account_id):
+        with self.db.transaction() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM outbox WHERE status='sending' AND delivery_account_id=? AND delivery_token IS NOT NULL AND delivery_closed_at IS NULL ORDER BY id LIMIT 100", (account_id,))]
+
+    def reconcile_delivery(self, outbox_id, token, core_id):
+        with self.db.transaction() as conn:
+            if not conn.execute("SELECT 1 FROM outbox WHERE id=? AND status='sending' AND delivery_token=?", (outbox_id, token)).fetchone():
+                return False
+            conn.execute("UPDATE outbox SET core_message_id=? WHERE id=?", (core_id, outbox_id))
+            self._mark_outbox_sent(conn, outbox_id)
+            return True
+
+    def close_uncertain_delivery(self, conn, user, network_id, outbox_id, now):
+        self._assert_admin_for(conn, user, network_id)
+        item = conn.execute("SELECT * FROM outbox WHERE id=? AND status='sending' AND delivery_closed_at IS NULL", (outbox_id,)).fetchone()
+        if not item or item["delivery_network_id"] != network_id:
+            raise UserError("该交付不属于当前网络或已经结束")
+        parts = item["dedupe_key"].split(":")
+        req = conn.execute("SELECT id FROM contact_requests WHERE public_id=? AND network_id=?", (parts[1], network_id)).fetchone() if len(parts) > 1 else None
+        if req and parts[0] in {"exchange", "reissue", "vcard"}:
+            conn.execute("UPDATE contact_requests SET status='invalid',updated_at=? WHERE id=? AND status='processing'", (now, req["id"]))
+            conn.execute("UPDATE outbox SET delivery_closed_at=?,body='' WHERE dedupe_key LIKE ? AND status='sending'", (now, f"{parts[0]}:{parts[1]}:%"))
+            conn.execute("DELETE FROM outbox WHERE dedupe_key LIKE ? AND status='pending'", (f"{parts[0]}:{parts[1]}:%",))
+        else:
+            conn.execute("UPDATE outbox SET delivery_closed_at=?,body='' WHERE id=?", (now, outbox_id))
+        self._audit(conn, network_id, user["id"], "close_uncertain_delivery", parts[1] if req else "D" + str(outbox_id), "closed without retransmission", now)
+        return "已结束该交换，不会重发。请双方先检查聊天中的名片，确实未收到时可重新发起交换。"
 
     def cleanup_retention(self) -> dict[str, int]:
         now = datetime.now(UTC)
@@ -231,6 +303,11 @@ class BotService:
     def _ensure_user(
         self, conn: sqlite3.Connection, message: IncomingMessage, now: str
     ) -> sqlite3.Row:
+        from .identity import reconcile, remember
+        reconcile(conn, self, message, now)
+        existing = conn.execute("SELECT merged_into,core_account_id FROM users WHERE actor_key=?", (message.actor_key,)).fetchone()
+        if existing and (existing["merged_into"] is not None or existing["core_account_id"] not in (0, message.account_id)):
+            raise UserError("账号身份已变更，请重新建立加密联系后再试")
         conn.execute(
             """INSERT INTO users(actor_key,contact_id,chat_id,is_system_admin,created_at,updated_at)
                VALUES(?,?,?,?,?,?)
@@ -246,9 +323,10 @@ class BotService:
                 now,
             ),
         )
-        return conn.execute(
-            "SELECT * FROM users WHERE actor_key=?", (message.actor_key,)
-        ).fetchone()
+        conn.execute("UPDATE users SET core_account_id=? WHERE actor_key=?", (message.account_id, message.actor_key))
+        user = conn.execute("SELECT * FROM users WHERE actor_key=?", (message.actor_key,)).fetchone()
+        remember(conn, message, user["id"], now)
+        return user
 
     def _dispatch(
         self,

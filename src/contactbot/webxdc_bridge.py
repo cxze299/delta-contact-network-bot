@@ -52,10 +52,11 @@ def package_p2p(destination: Path) -> None:
 
 
 class WebxdcBridge:
-    def __init__(self, rpc, service, *, require_verified=False, identity_key=None):
+    def __init__(self, rpc, service, *, require_verified=False, identity_key=None, identity_resolver=None):
         self.rpc, self.service = rpc, service
         self.require_verified = require_verified
         self.identity_key = identity_key
+        self.identity_resolver = identity_resolver
         self._last_sync = {}
         self._summary_cleanup_done = set()
         self.admin = XdcAdmin(service, os.environ.get("CONTACTBOT_XDC_ADMIN_VERIFIER", ""))
@@ -324,6 +325,8 @@ class WebxdcBridge:
                 JOIN memberships b ON b.id=r.target_membership_id
                 WHERE r.network_id=? AND (a.user_id=? OR b.user_id=?) ORDER BY r.id DESC LIMIT 20""",
                 (user["id"], user["current_network_id"], user["id"], user["id"]))] if profile else []
+            for request in requests:
+                request["delivery_uncertain"] = bool(conn.execute("SELECT 1 FROM outbox WHERE status='sending' AND delivery_closed_at IS NULL AND (dedupe_key LIKE ? OR dedupe_key LIKE ?)", (f"exchange:{request['public_id']}:%", f"reissue:{request['public_id']}:%")).fetchone())
             choices = []
             if pending and pending["action"] == "guide_choose_target":
                 for index, member_id in enumerate(json.loads(pending["payload"])["ids"], 1):
@@ -417,33 +420,56 @@ class WebxdcBridge:
         self._summary_cleanup_done.add(identity)
 
     def sync_all(self, account_id):
-        """Recheck the real chat before every private snapshot, including web changes."""
+        """Verify each private chat once, consume all instances, publish once."""
         from deltachat2.types import ChatType
-
         from .service import IncomingMessage
         with self.service.db.transaction() as conn:
             self.service._expire(conn, _now())
             rows = list(conn.execute("SELECT x.*,u.contact_id FROM xdc_instances x JOIN users u ON u.actor_key=x.actor_key WHERE x.account_id=? AND u.chat_id=x.chat_id", (account_id,)))
+        verified, changed = {}, {}
         for row in rows:
             try:
-                chat = self.rpc.get_basic_chat_info(account_id, row["chat_id"])
-                if chat.chat_type != ChatType.SINGLE or chat.is_device_chat or chat.is_self_talk or not chat.is_encrypted:
+                identity = (row["contact_id"], row["chat_id"])
+                if identity not in verified:
+                    verified[identity] = None
+                    chat = self.rpc.get_basic_chat_info(account_id, row["chat_id"])
+                    if chat.chat_type != ChatType.SINGLE or chat.is_device_chat or chat.is_self_talk or not chat.is_encrypted:
+                        continue
+                    contact = self.rpc.get_contact(account_id, row["contact_id"])
+                    if self.require_verified and not contact.is_verified:
+                        continue
+                    address = getattr(contact, "address", "")
+                    if self.identity_key and not address:
+                        continue
+                    actor_key = self.identity_key(address) if self.identity_key else row["actor_key"]
+                    incoming = IncomingMessage(account_id, 0, actor_key, row["contact_id"], row["chat_id"], "", True, True, contact_address=address)
+                    if self.identity_resolver:
+                        incoming = self.identity_resolver(incoming)
+                        with self.service.db.transaction() as conn:
+                            self.service._ensure_user(conn, incoming, _now())
+                    elif actor_key != row["actor_key"]:
+                        continue
+                    verified[identity] = incoming
+                incoming = verified[identity]
+                if incoming is None:
                     continue
-                contact = self.rpc.get_contact(account_id, row["contact_id"])
-                if self.require_verified and not contact.is_verified:
+                with self.service.db.transaction() as conn:
+                    refreshed = conn.execute("SELECT * FROM xdc_instances WHERE token=? AND actor_key=? AND account_id=? AND chat_id=?", (row["token"], incoming.actor_key, account_id, incoming.chat_id)).fetchone()
+                if not refreshed:
                     continue
-                address = getattr(contact, "address", "")
-                if self.identity_key and (not address or self.identity_key(address) != row["actor_key"]):
-                    continue
-                incoming = IncomingMessage(account_id, 0, row["actor_key"], row["contact_id"], row["chat_id"], "", True, True, contact_address=address)
-                try:
-                    self.clear_previous_summaries(incoming)
-                except Exception as exc:  # noqa: BLE001 - do not block the app or log private details
-                    logging.getLogger(__name__).warning("旧应用外观更新将重试（%s）", type(exc).__name__)
-                self.consume_updates(row, incoming)
-                self.sync(incoming)
-            except Exception as exc:  # noqa: BLE001 - isolate RPC failures; never log private payloads
+                self.consume_updates(refreshed, incoming)
+                changed[identity] = incoming
+            except Exception as exc:
                 logging.getLogger(__name__).warning("小应用同步将重试（%s）", type(exc).__name__)
+        for incoming in changed.values():
+            try:
+                self.clear_previous_summaries(incoming)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("旧应用外观更新将重试（%s）", type(exc).__name__)
+            try:
+                self.sync(incoming)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("小应用状态发布将重试（%s）", type(exc).__name__)
 
     def consume_updates(self, instance, incoming):
         """Only consume the server-bound instance; never trust selfAddr/payload identity.
