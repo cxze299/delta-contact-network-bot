@@ -178,8 +178,8 @@ class WebxdcBridge:
                     old_actor = hmac.new(self.service.secret, old_address.strip().casefold().encode("utf-8"), hashlib.sha256).hexdigest()
                     rows = conn.execute("""SELECT m.member_code FROM memberships m JOIN users u ON u.id=m.user_id
                         WHERE m.network_id=? AND m.nickname=? AND m.status='active' AND (u.actor_key=? OR EXISTS
-                        (SELECT 1 FROM users alias WHERE alias.merged_into=u.id AND alias.actor_key=?)) LIMIT 2""",
-                        (network["id"], nickname.strip(), old_actor, old_actor)).fetchall() if network and network["status"] == "active" else []
+                        (SELECT 1 FROM users alias WHERE alias.merged_into=u.id AND (alias.actor_key=? OR alias.actor_key=('merged:' || alias.id || ':' || ?)))) LIMIT 2""",
+                        (network["id"], nickname.strip(), old_actor, old_actor, old_actor)).fetchall() if network and network["status"] == "active" else []
                     if len(rows) != 1:
                         raise UserError("未找到唯一匹配的成员，请检查信息或联系管理员")
                     self.service._submit_account_recovery(conn, user, network["public_id"] + " " + rows[0]["member_code"], now, key)

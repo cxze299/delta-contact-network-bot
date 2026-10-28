@@ -48,6 +48,22 @@ def test_recovery_needs_valid_code_and_old_address_and_disambiguates_names(clien
     assert alice.db.execute("SELECT m.user_id FROM account_recoveries r JOIN memberships m ON m.id=r.membership_id").fetchone()[0] == alice.db.execute("SELECT id FROM users WHERE actor_key=?", (alice.incoming.actor_key,)).fetchone()[0]
 
 
+def test_recovery_accepts_retained_historical_address_alias(clients):
+    alice, _ = clients
+    alice.join(); bind_real_actor(alice)
+    old_actor = alice.incoming.actor_key
+    current = hmac.new(alice.bridge.service.secret, b"current@example.org", hashlib.sha256).hexdigest()
+    with alice.bridge.service.db.transaction() as conn:
+        uid = conn.execute("SELECT id FROM users WHERE actor_key=?", (old_actor,)).fetchone()[0]
+        conn.execute("UPDATE users SET actor_key=? WHERE id=?", (current, uid))
+        alias_id = conn.execute("INSERT INTO users(actor_key,contact_id,chat_id,merged_into,created_at,updated_at) VALUES('temporary-alias',-1,-1,?,'2026','2026')", (uid,)).lastrowid
+        conn.execute("UPDATE users SET actor_key=? WHERE id=?", (f"merged:{alias_id}:{old_actor}", alias_id))
+    restored = flow.Client(alice.bridge, "replacement", 30)
+    restored.call("recover_by_name", join_code="test-network-code", nickname="alice", old_address="alice@example.org")
+    assert restored.snapshot()["receipt"]["ok"]
+    assert alice.db.execute("SELECT m.user_id FROM account_recoveries r JOIN memberships m ON m.id=r.membership_id").fetchone()[0] == uid
+
+
 def test_recovery_failed_attempts_are_rate_limited_after_rollback(clients):
     alice, _ = clients
     alice.join(); bind_real_actor(alice)
