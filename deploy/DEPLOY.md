@@ -1,5 +1,7 @@
 # Linux 部署
 
+> 当前 Webxdc 版本的推荐安装、备份、恢复和升级步骤请以[项目 README](../README.md)为准。下方部分手动和 systemd 示例为历史资料，未随当前小程序流程重新验收。
+
 ## 交互式全自动部署（推荐）
 
 在全新克隆的项目目录中运行：
@@ -16,7 +18,7 @@ chmod +x scripts/install-interactive.sh
 从 GitHub 克隆项目后，先准备环境和 Delta Chat RPC Server：
 
 ```bash
-git clone https://github.com/cxze299/delta-contact-network-bot.git
+git clone --branch fix/webxdc-reliability-20261028 --single-branch https://github.com/cxze299/delta-contact-network-bot.git
 cd delta-contact-network-bot
 cp .env.example .env
 chmod 600 .env

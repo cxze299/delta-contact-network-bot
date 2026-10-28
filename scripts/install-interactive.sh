@@ -87,6 +87,7 @@ esac
 if [ -e "$env_file" ]; then
     fail "已存在 .env。为防止覆盖现有部署，请使用 ./scripts/deploy-server.sh 更新；全新安装请换一个空目录"
 fi
+[ ! -e "$credentials_file" ] || fail "已存在 admin-web-access.txt，请换一个空目录以免覆盖现有凭据"
 
 docker_bin=$(find_docker)
 docker_with_sudo=0
@@ -116,6 +117,7 @@ say ""
 
 display_name=$(prompt "机器人名称" "好友助手")
 [ -n "$display_name" ] || fail "机器人名称不能为空"
+case "$display_name" in *'$'*|*'#'*|*'\'*) fail "机器人名称不能包含美元符号、井号或反斜杠" ;; esac
 
 relay_server=$(prompt "Chatmail 中继服务器域名" "nine.testrun.org")
 relay_server=${relay_server#dcaccount:}
@@ -155,6 +157,7 @@ case "$storage_root" in
     /*) ;;
     *) fail "持久化数据根目录必须使用绝对路径" ;;
 esac
+case "$storage_root" in *'$'*|*'#'*|*':'*|*'\'*) fail "数据目录不能包含美元符号、井号、冒号或反斜杠" ;; esac
 
 data_dir="$storage_root/data"
 account_dir="$storage_root/runtime/account"
@@ -163,6 +166,7 @@ rpc_dir="$storage_root/runtime/bin"
 if [ -e "$data_dir/contactbot.sqlite3" ] || [ -n "$(find "$account_dir" -mindepth 1 -print -quit 2>/dev/null || true)" ]; then
     fail "目标目录中已有数据库或账号数据。请换一个空目录，避免覆盖现有部署"
 fi
+[ ! -e "$rpc_dir/deltachat-rpc-server" ] || fail "目标目录中已有 RPC Server；请换一个空目录，避免覆盖已有文件"
 
 say ""
 say "即将部署："
@@ -176,6 +180,7 @@ confirm=$(prompt "输入 yes 开始部署" "yes")
 
 contactbot_secret=$(generate_secret)
 admin_web_token=$(generate_secret)
+xdc_admin_key=$(generate_secret)
 umask 077
 mkdir -p "$data_dir" "$account_dir" "$rpc_dir"
 
@@ -208,6 +213,18 @@ EOF
 chmod 0600 "$temp_env"
 mv "$temp_env" "$env_file"
 
+# Keep the generated credentials even if a later download or registration
+# fails. The installer never replaces this file on an existing deployment.
+cat > "$credentials_file" <<EOF
+好友助手网页管理后台
+用户名：admin
+密码：$admin_web_token
+小程序管理员密钥：$xdc_admin_key
+端口：$admin_port
+监听地址：$admin_bind
+EOF
+chmod 0600 "$credentials_file"
+
 rpc_url="https://github.com/chatmail/core/releases/download/v$rpc_version/deltachat-rpc-server-$rpc_arch-linux"
 say "下载 Delta Chat RPC Server $rpc_version ($rpc_arch)…"
 download_file "$rpc_url" "$temp_rpc"
@@ -227,6 +244,11 @@ cd "$project_dir"
 say "构建 Docker 镜像…"
 docker_run compose build
 
+say "设置小程序管理员密钥…"
+xdc_admin_verifier=$(printf '%s' "$xdc_admin_key" | docker_run compose run --rm -T --entrypoint /venv/bin/python contact-bot -c 'import sys; from contactbot.xdc_admin import make_verifier; print(make_verifier(sys.stdin.read()))')
+case "$xdc_admin_verifier" in 250000:????????????????????????????????:????????????????????????????????????????????????????????????????) ;; *) fail "小程序管理员密钥配置失败；请保留现有数据并检查安装状态" ;; esac
+printf 'CONTACTBOT_XDC_ADMIN_VERIFIER=%s\n' "$xdc_admin_verifier" >> "$env_file"
+
 say "初始化数据库…"
 docker_run compose run --rm contact-bot init-db
 
@@ -234,16 +256,7 @@ say "通过 $relay_server 自动创建机器人账号…"
 account_result=$(docker_run compose run --rm contact-bot configure "dcaccount:$relay_server")
 say "$account_result"
 
-cat > "$credentials_file" <<EOF
-好友助手网页管理后台
-用户名：admin
-密码：$admin_web_token
-端口：$admin_port
-监听地址：$admin_bind
-
-$account_result
-EOF
-chmod 0600 "$credentials_file"
+printf '\n%s\n' "$account_result" >> "$credentials_file"
 
 say "启动并检查服务…"
 CONTACTBOT_DOCKER_BIN="$docker_bin" "$project_dir/scripts/deploy-server.sh"
@@ -258,4 +271,4 @@ if [ "$admin_bind" = 0.0.0.0 ]; then
 else
     say "后台仅监听本机：http://127.0.0.1:$admin_port"
 fi
-say "系统管理员现在可以私聊机器人，发送“管理”创建第一个联系网络。"
+say "向机器人发任意消息，打开收到的小程序，并在“我的 → 管理网络”输入密钥。"

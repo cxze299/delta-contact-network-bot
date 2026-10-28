@@ -8,6 +8,7 @@ admin-web-access.txt
 data/
 backups/
 accounts/
+runtime/
 .tmp/
 dist/
 release-*.tgz
