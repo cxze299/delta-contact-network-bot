@@ -489,6 +489,7 @@ function renderMe(page) {
   const networks = settingsDisclosure(page, "我的网络");
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
   button(networks, "加入新网络", () => openJoin(), "primary local-navigation");
+  if (state.networks.some(n => n.current)) button(networks, "退出网络", () => command("退出网络"), "danger");
   const safety = settingsDisclosure(page, "屏蔽、举报与账号");
   const blocked = state.blocked_members || [];
   if (!blocked.length) node("p", "暂无屏蔽的成员。", safety, "muted");
@@ -519,7 +520,7 @@ function renderMe(page) {
     if (directory.page > 0 || directory.has_more) node("span", "第 " + (directory.page + 1) + " 页", paging, "muted");
     if (directory.has_more) button(paging, "下一页", () => send("directory", {page: directory.page + 1}));
   } else if (p) button(safety, "加载好友", () => send("directory", {page: 0}));
-  button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "退出当前网络", () => command("退出网络"), "danger"); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
+  button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
   const info = settingsDisclosure(page, "隐私说明与使用帮助"); privacy(info);
   node("p", "仅公开资料的成员会出现在目录中。申请 7 天后过期；双方确认后交换联系方式，请自行核验身份。", info, "muted");
   node("p", "点击按钮即可操作，结果自动同步。不需要返回聊天发送指令，也不需要网页后台账号。首次获取或更新时才需发送“小程序”。", info, "muted");
