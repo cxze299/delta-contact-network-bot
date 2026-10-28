@@ -147,6 +147,9 @@ def test_directory_first_page_arrives_in_initial_snapshot(clients):
     directory = alice.snapshot()["directory"]
     assert directory["page"] == 0
     assert [m["nickname"] for m in directory["members"]] == ["bob"]
+    assert [m["nickname"] for m in bob.snapshot()["directory"]["members"]] == ["alice"]
+    alice.call(command="隐藏资料")
+    assert bob.snapshot()["directory"]["members"] == []
     assert alice.db.execute("SELECT count(*) FROM xdc_directory WHERE token=?", (alice.token,)).fetchone()[0] == 0
 
 

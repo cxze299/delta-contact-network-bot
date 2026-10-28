@@ -1,3 +1,2 @@
-FROM delta-contact-network-bot:identity-delivery-20261028
-COPY src/contactbot/webxdc_bridge.py /venv/lib/python3.12/site-packages/contactbot/webxdc_bridge.py
-COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/
+FROM delta-contact-network-bot:modal-confirm-20261028
+COPY src/contactbot/webxdc/app.js /venv/lib/python3.12/site-packages/contactbot/webxdc/app.js

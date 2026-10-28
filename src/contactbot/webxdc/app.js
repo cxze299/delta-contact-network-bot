@@ -7,6 +7,7 @@ let autoNetwork = null, registrationAttempted = false;
 let deferredRemoteRender = false;
 let adminView = false, adminSection = "网络", adminConfirm = null, adminUnlocking = false;
 const expandedMembers = new Set();
+const expandedSettings = new Set();
 let notifications = [], readNotifications = {};
 try { readNotifications = JSON.parse(localStorage.getItem("friend-notifications-read") || "{}"); } catch { /* Storage is optional. */ }
 let waiting = null, waitTimer;
@@ -119,6 +120,15 @@ function currentAccount(parent) {
 }
 function disclosure(parent, title) {
   const d = node("details", null, parent, "card"); node("summary", title, d); return d;
+}
+function settingsDisclosure(parent, title) {
+  const section = disclosure(parent, title);
+  section.open = expandedSettings.has(title);
+  section.addEventListener("toggle", () => {
+    if (!section.isConnected) return;
+    if (section.open) expandedSettings.add(title); else expandedSettings.delete(title);
+  });
+  return section;
 }
 function privacy(parent) {
   node("p", "机器人服务端可以处理你发送的数据。只收集昵称、介绍及必要账号标识；目录不展示联系方式。", parent, "muted");
@@ -319,10 +329,10 @@ function renderRequests(page) {
 function renderMe(page) {
   const p = state.profile; node("h1", p?.nickname || "我的资料", page);
   if (p) {
-    node("p", "成员编号 " + p.member_code, page, "muted"); const profile = disclosure(page, "昵称与个人介绍");
+    node("p", "成员编号 " + p.member_code, page, "muted"); const profile = settingsDisclosure(page, "昵称与个人介绍");
     form(profile, "昵称", value => command("编辑昵称", value), {value: p.nickname, max: 40, button: "保存昵称"});
     form(profile, "简短介绍", value => command("编辑介绍", value), {value: p.bio, required: false, multiline: true, button: "保存介绍"});
-    const contact = disclosure(page, "联系方式");
+    const contact = settingsDisclosure(page, "联系方式");
     node("p", "粘贴自己的好友链接或输入账号，保存一次即可。每次交换前会展示本次分享的账号。", contact, "muted");
     const contactInput = form(contact, "好友链接或 Delta Chat 账号", value => {
       if (value.includes("://") || value.toLowerCase().includes("i.delta.chat/#")) {
@@ -338,7 +348,7 @@ function renderMe(page) {
       node("p", "当前私聊账号：" + p.communication_address, contact, "muted");
       button(contact, "使用当前账号", () => send("use_current_account"));
     }
-    const settings = node("section", null, page, "card"); node("h2", "隐私设置", settings);
+    const settings = settingsDisclosure(page, "隐私设置");
     const autoRow = node("div", null, settings, "setting"); node("span", "自动交换名片", autoRow);
     const autoToggle = button(autoRow, "", () => send("auto_share", {enabled: !p.auto_share}), "ios-switch");
     autoToggle.setAttribute("role", "switch"); autoToggle.setAttribute("aria-label", "自动交换名片"); autoToggle.setAttribute("aria-checked", String(Boolean(p.auto_share))); node("span", null, autoToggle, "switch-knob");
@@ -352,19 +362,19 @@ function renderMe(page) {
       node("span", null, toggle, "switch-knob");
     }
   }
-  const networks = disclosure(page, "我的网络");
+  const networks = settingsDisclosure(page, "我的网络");
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
   button(networks, "加入新网络", () => send("join"), "primary");
-  const safety = disclosure(page, "屏蔽、举报与账号");
+  const safety = settingsDisclosure(page, "屏蔽、举报与账号");
   form(safety, "屏蔽成员编号", value => command("屏蔽", value), {button: "屏蔽", max: 30});
   form(safety, "解除屏蔽成员编号", value => command("解除屏蔽", value), {button: "解除屏蔽", max: 30});
   button(safety, "查看屏蔽列表", () => command("屏蔽列表"));
   form(safety, "举报：成员编号 + 空格 + 原因", value => command("举报", value), {button: "提交举报", max: 500, multiline: true});
   button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "退出当前网络", () => command("退出网络"), "danger"); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
-  const info = disclosure(page, "隐私说明与使用帮助"); privacy(info);
+  const info = settingsDisclosure(page, "隐私说明与使用帮助"); privacy(info);
   node("p", "仅公开资料的成员会出现在目录中。申请 7 天后过期；双方确认后交换联系方式，请自行核验身份。", info, "muted");
   node("p", "点击按钮即可操作，结果自动同步。不需要返回聊天发送指令，也不需要网页后台账号。首次获取或更新时才需发送“小程序”。", info, "muted");
-  button(page, "管理网络 ›", () => { adminView = true; adminConfirm = null; render(); send("admin_open"); }, "admin-entry");
+  button(page, "管理网络 ›", () => { expandedSettings.clear(); adminView = true; adminConfirm = null; render(); send("admin_open"); }, "admin-entry");
 }
 function adminOperation(operation, data = {}, question = "") {
   if (question) {
@@ -378,7 +388,7 @@ function revealOperation(selector, focus = true) {
     const region = document.querySelector(selector) || document.querySelector("#admin-section");
     if (!region) return;
     document.querySelectorAll(".operation-focus").forEach(el => el.classList.remove("operation-focus"));
-    region.classList.add("operation-focus");
+    if (!region.classList.contains("admin-actions")) region.classList.add("operation-focus");
     if (focus) {
       const control = region.matches("button,summary") ? region : region.querySelector("button,summary");
       const target = control || region;
@@ -567,6 +577,7 @@ function renderNav() {
   const icons = {"好友": "M4 20v-1a6 6 0 0 1 12 0v1M10 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM18 8h5M20.5 5.5v5", "申请": "M4 5h16v14H4zM7 9h10M7 13h7", "消息": "M4 6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H10l-5 4v-4a3 3 0 0 1-1-3z", "我的": "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0"};
   for (const name of ["好友", "申请", "消息", "我的"]) {
     const b = button($("nav"), "", () => {
+      if (tab === "我的" && name !== "我的") expandedSettings.clear();
       tab = name;
       if (name === "消息") { notifications.forEach(n => { readNotifications[n.id] = true; }); try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {} }
       render(); scrollTop();
