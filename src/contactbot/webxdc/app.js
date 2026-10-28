@@ -200,30 +200,20 @@ function privacy(parent) {
   node("p", "机器人服务端可以处理你发送的数据。只收集昵称、介绍及必要账号标识；目录不展示联系方式。", parent, "muted");
   node("p", "联系方式仅按你的授权分享；交付后无法从接收方设备收回。小应用更新留存在聊天历史中，删除服务器数据不会自动删除设备上的历史，请自行删除旧的小应用消息。", parent, "muted");
 }
-function openJoin(network = null) {
-  joinDraft = {network, code: "", nickname: state.profile?.nickname || "", discoverable: true, accepts: true, requestId: null};
+function openJoin() {
+  joinDraft = {code: "", nickname: state.profile?.nickname || "", discoverable: true, accepts: true, requestId: null};
   dismissedStep = state.pending?.token || null;
   adminView = false; adminConfirm = null; closeModal(); render(); scrollTop();
 }
 function renderJoin(page) {
   const draft = joinDraft;
   button(page, "‹ 返回", () => { joinDraft = null; tab = state.profile ? "我的" : "好友"; render(); scrollTop(); }, "quiet local-navigation");
-  node("h1", draft.network ? "加入“" + draft.network.name + "”" : "加入新网络", page);
+  node("h1", "加入新网络", page);
   const f = node("form", null, page, "card onboarding");
-  const manageable = state.admin?.unlocked ? (state.admin.networks || []).filter(network => network.status === "active" && network.join_enabled) : [];
-  if (manageable.length) {
-    const source = node("label", "选择网络或使用加入码", f);
-    const choose = node("select", null, source, "safety-select");
-    node("option", "使用加入码", choose).value = "";
-    for (const network of manageable) { const option = node("option", network.name, choose); option.value = String(network.id); option.selected = network.id === draft.network?.id; }
-    choose.onchange = () => { draft.network = manageable.find(network => String(network.id) === choose.value) || null; render(); };
-  }
-  if (!draft.network) {
-    const label = node("label", "网络加入码", f);
-    const code = node("input", null, label); code.value = draft.code; code.required = true; code.maxLength = 200;
+  const codeLabel = node("label", "网络加入码", f);
+  const code = node("input", null, codeLabel); code.value = draft.code; code.required = true; code.maxLength = 200;
     code.placeholder = "粘贴管理员提供的加入码（不是网络名称）"; code.autocomplete = "off"; code.autocapitalize = "none"; code.spellcheck = false;
     code.setAttribute("autocorrect", "off"); code.oninput = () => { draft.code = code.value; };
-  }
   const label = node("label", "在此网络使用的昵称", f);
   const nickname = node("input", null, label); nickname.value = draft.nickname; nickname.required = true; nickname.maxLength = 40;
   nickname.oninput = () => { draft.nickname = nickname.value; };
@@ -235,7 +225,7 @@ function renderJoin(page) {
   const submit = node("button", "加入网络", f, "primary"); submit.type = "submit"; submit.disabled = !ready;
   f.onsubmit = event => {
     event.preventDefault(); submittingControl = submit; document.activeElement?.blur();
-    send("join_network", {value: draft.code.trim(), nickname: draft.nickname.trim(), consent: true, use_current_account: true, discoverable: draft.discoverable, accepts_requests: draft.accepts, ...(draft.network ? {admin_network: draft.network.id} : {})});
+    send("join_network", {value: draft.code.trim(), nickname: draft.nickname.trim(), consent: true, use_current_account: true, discoverable: draft.discoverable, accepts_requests: draft.accepts});
   };
 }
 // Dialogs live outside the scrollable page so they stay in the visible viewport.
@@ -498,13 +488,6 @@ function renderMe(page) {
   }
   const networks = settingsDisclosure(page, "我的网络");
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
-  if (state.admin?.unlocked) {
-    for (const n of state.admin.networks || []) {
-      if (n.status === "active" && n.join_enabled && !state.networks.some(joined => joined.public_id === n.public_id)) {
-        button(networks, "加入 · " + n.name, () => openJoin(n), "primary local-navigation");
-      }
-    }
-  }
   button(networks, "加入新网络", () => openJoin(), "primary local-navigation");
   const safety = settingsDisclosure(page, "屏蔽、举报与账号");
   const blocked = state.blocked_members || [];
@@ -633,7 +616,7 @@ function renderAdmin(page) {
     const joined = state.networks.find(n => n.public_id === current.public_id);
     if (current.status === "active") {
       if (joined) button(card, "进入此网络", () => command("切换网络", current.public_id), "primary");
-      else if (current.join_enabled) button(card, "加入此网络", () => openJoin(current), "primary local-navigation");
+      else if (current.join_enabled) button(card, "加入此网络", () => openJoin(), "primary local-navigation");
     }
     const row = node("div", null, card, "setting"); node("span", "允许新成员加入", row);
     const toggle = button(row, "", () => adminOperation(current.join_enabled ? "join_off" : "join_on"), "ios-switch");
