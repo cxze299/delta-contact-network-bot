@@ -484,9 +484,9 @@ function adminButtonGroup(parent, entries) {
 }
 function renderAdmin(page) {
   const top = node("div", null, page, "admin-top");
-  button(top, "‹ 返回", () => { adminView = false; adminConfirm = null; render(); }, "quiet");
-  if (state.admin?.unlocked) button(top, "撤销本账号授权", () => { adminConfirm = null; send("admin_lock"); }, "quiet");
-  node("h1", "网络管理", page);
+  button(top, "‹ 返回", () => { adminView = false; adminConfirm = null; render(); }, "quiet admin-back");
+  node("h1", "网络管理", top);
+  if (state.admin?.unlocked) button(top, "退出授权", () => { adminConfirm = null; send("admin_lock"); }, "quiet admin-lock");
   const data = state.admin;
   if (!data) { node("div", "正在打开管理工具…", page, "empty muted"); return; }
   if (!data.unlocked) {
@@ -500,10 +500,10 @@ function renderAdmin(page) {
     } else form(card, "管理员密钥", unlockAdmin, {type: "password", autocomplete: "off", clearOnSubmit: true, max: 128, button: "解锁管理"});
     return;
   }
-  if (state.messages.length) node("p", visibleText(state.messages[state.messages.length - 1]), page, "admin-result");
   const networks = data.networks || [], current = networks.find(n => n.id === data.current);
   if (networks.length) {
-    const chooser = node("label", "管理网络", page, "admin-network-label");
+    const chooser = node("label", null, page, "admin-network-label");
+    node("span", "当前网络", chooser);
     const select = node("select", null, chooser, "admin-select");
     for (const n of networks) { const option = node("option", n.name, select); option.value = String(n.id); option.selected = n.id === data.current; }
     select.onchange = () => { adminConfirm = null; send("admin_select", {admin_network: Number(select.value), page: 0}); };
@@ -511,7 +511,8 @@ function renderAdmin(page) {
   const sections = data.system ? ["网络", "成员", "审核", "记录", "系统"] : ["网络", "成员", "审核", "记录"];
   if (!sections.includes(adminSection)) adminSection = "网络";
   const tabs = node("div", null, page, "admin-tabs");
-  for (const section of sections) button(tabs, section, () => { adminSection = section; adminConfirm = null; render(); revealOperation("#admin-section", false); }, section === adminSection ? "selected" : "quiet");
+  for (const section of sections) button(tabs, section, () => { adminSection = section; adminConfirm = null; render(); }, section === adminSection ? "selected" : "quiet");
+  if (state.messages.length) node("p", visibleText(state.messages[state.messages.length - 1]), page, "admin-result");
   page = node("section", null, page); page.id = "admin-section";
   if (!current && adminSection !== "系统") { node("div", "暂无可管理的网络。", page, "empty muted"); return; }
   if (adminSection === "网络") {
@@ -595,6 +596,7 @@ function renderAdmin(page) {
   }
 }
 function render() {
+  document.body.classList.toggle("admin-mode", tab === "我的" && adminView);
   const current = state.networks.find(n => n.current); $("network").textContent = current?.name || state.pending?.network_name || "好友助手";
   const page = $("page"), wizard = $("wizard");
   if (wizard.parentElement === page) page.parentElement.insertBefore(wizard, page);

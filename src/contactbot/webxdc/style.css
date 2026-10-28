@@ -54,3 +54,14 @@ body{position:fixed;top:0;bottom:0;left:0;right:0;width:100%;height:auto}
 .modal-retry{margin-top:8px;min-height:40px;font-size:14px}
 
 .safety-select{display:block;width:100%;margin:8px 0 12px;padding:12px;border:0;border-radius:10px;background:var(--bg);color:var(--ink);font:inherit;font-size:16px}
+
+/* A compact navigation bar keeps the management task in focus. */
+.admin-mode .topbar,.admin-mode .network-bar{display:none}
+.admin-mode main{padding-top:8px}
+.admin-top{position:relative;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:4px;min-height:52px;margin:0 -8px 14px}
+.admin-top h1{font-size:19px;line-height:1.25;letter-spacing:0;margin:0;text-align:center;white-space:nowrap}
+.admin-top button{font-size:14px;min-height:44px;padding:8px;white-space:nowrap}
+.admin-back{justify-self:start}.admin-lock{justify-self:end}
+.admin-network-label{display:flex;align-items:center;gap:12px;margin:0;color:var(--muted);font-size:14px;background:var(--paper);border-radius:12px;padding:0 14px;min-height:50px}
+.admin-network-label span{flex:none}.admin-select{flex:1;min-width:0;width:auto;margin:0;padding:12px 0;border-radius:0;text-align:right;font-size:15px;font-weight:600}
+.admin-tabs{margin:12px 0 16px}.admin-result{margin:0 0 14px;padding:10px 12px;font-size:13px}.admin-mode #admin-section>.empty{margin-top:0}
