@@ -755,3 +755,22 @@ def test_existing_vcard_confirmation_can_be_submitted_from_modal(clients):
     state = alice.snapshot()
     assert state["receipt"]["ok"], state["messages"]
     assert alice.db.execute("SELECT request_kind FROM contact_requests").fetchone()[0] == "vcard"
+
+
+@pytest.mark.parametrize("stage", ["code", "nickname", "confirm"])
+def test_existing_member_can_cancel_join_without_leaving_original_network(clients, stage):
+    alice, _ = clients
+    alice.join()
+    old_network = alice.snapshot()["current_network"]
+    alice.bridge.service.seed_network("新网络", "new-network-code")
+    alice.call("join")
+    if stage != "code":
+        alice.reply("new-network-code")
+    if stage == "confirm":
+        alice.reply("新昵称")
+    alice.call(command="取消")
+    state = alice.snapshot()
+    assert state["receipt"]["ok"]
+    assert state["current_network"] == old_network
+    assert not state["pending"] or state["pending"]["action"] not in {"guide_join_code", "guide_nickname", "join"}
+    assert len(state["networks"]) == 1

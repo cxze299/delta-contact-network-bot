@@ -1,3 +1,2 @@
-FROM delta-contact-network-bot:no-new-bans-20261028
-COPY src/contactbot/xdc_admin.py /venv/lib/python3.12/site-packages/contactbot/
+FROM delta-contact-network-bot:network-flow-20261028
 COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/

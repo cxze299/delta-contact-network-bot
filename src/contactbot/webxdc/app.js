@@ -93,7 +93,7 @@ async function send(action, extra = {}) {
   note("正在提交…");
   try {
     const payload = await seal({token: window.CONTACT_CONFIG.token, id, action, network: state.current_network, notification_version: 1, ...extra});
-    waiting = {id, payload, kind: action, operation: extra.operation || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
+    waiting = {id, payload, kind: action, operation: extra.operation || "", command: extra.command || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
     await resend();
   } catch { note("提交失败，请稍后重试。"); }
   finally { preparing = false; }
@@ -768,7 +768,10 @@ if (window.webxdc?.setUpdateListener && bound) {
       }
       const showConfirmation = waiting.openMessages && p.receipt.ok && p.pending?.action === "send_request";
       const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
-      const completedJoin = p.receipt.ok && (previousStep === "join" || (previousStep === "guide_join_code" && changed && p.profile));
+      const joiningStep = ["guide_join_code", "guide_nickname", "join"].includes(previousStep);
+      const cancelledJoin = p.receipt.ok && joiningStep && waiting.kind === "command" && waiting.command === "取消";
+      const completedJoin = p.receipt.ok && ((waiting.kind === "reply" && previousStep === "join") || ((waiting.kind === "reply" || waiting.kind === "join") && changed && p.profile && (previousStep === "guide_join_code" || waiting.kind === "join")));
+      if (cancelledJoin) { adminView = false; tab = state.profile ? "我的" : "好友"; scrollTop(); }
       if (completedJoin) { tab = "好友"; adminView = false; scrollTop(); }
       waiting = null; rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
       if (showConfirmation) {
@@ -777,7 +780,7 @@ if (window.webxdc?.setUpdateListener && bound) {
         try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {}
         scrollTop();
       }
-      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : completedJoin ? "已进入所选网络。" : "") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
+      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : cancelledJoin ? "已取消加入。" : completedJoin ? "已进入所选网络。" : "") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
     } else if (!waiting) note("");
     if (adminReceipt === "admin_action" || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt);
     if (adminReceipt && adminView) {
