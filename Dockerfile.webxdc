@@ -1,3 +1,3 @@
-FROM delta-contact-network-bot:join-cancel-20261028
+FROM delta-contact-network-bot:receipt-retry-20261028
 COPY src/contactbot/webxdc_bridge.py /venv/lib/python3.12/site-packages/contactbot/
 COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/

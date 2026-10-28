@@ -812,3 +812,38 @@ def test_legacy_duplicate_with_unknown_result_is_not_reexecuted(clients):
     state = alice.snapshot()
     assert state["receipt"] == {"request_id": request_id, "ok": 0}
     assert alice.db.execute("SELECT count(*) FROM rate_events WHERE category='join_attempt'").fetchone()[0] == before
+
+
+def test_cancel_join_is_scoped_to_exact_step_and_preserves_networks(clients):
+    alice, _ = clients
+    alice.join()
+    old = alice.snapshot()["current_network"]
+    alice.bridge.service.seed_network("第二网络", "second-network-code")
+    alice.call("join")
+    stale = alice.snapshot()["pending"]["token"]
+    alice.reply("second-network-code")
+    current = alice.snapshot()["pending"]["token"]
+    alice.call("cancel_join", step=stale)
+    assert not alice.snapshot()["receipt"]["ok"]
+    assert alice.snapshot()["pending"]["token"] == current
+    alice.call("cancel_join", step=current)
+    assert alice.snapshot()["receipt"]["ok"]
+    assert alice.snapshot()["pending"] is None
+    assert alice.snapshot()["current_network"] == old
+    assert len(alice.snapshot()["networks"]) == 1
+
+
+def test_stale_network_can_refresh_but_cannot_mutate_other_network(clients):
+    alice, _ = clients
+    alice.join()
+    old = alice.snapshot()["current_network"]
+    alice.bridge.service.seed_network("第二网络", "second-network-code")
+    alice.join("second-network-code")
+    new = alice.snapshot()["current_network"]
+    alice.call("refresh", network=old)
+    assert alice.snapshot()["receipt"]["ok"]
+    assert alice.snapshot()["current_network"] == new
+    alice.call(command="隐藏资料", network=old)
+    assert not alice.snapshot()["receipt"]["ok"]
+    assert alice.snapshot()["profile"]["discoverable"]
+    assert len(alice.snapshot()["networks"]) == 2

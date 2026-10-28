@@ -3,7 +3,6 @@
 const $ = id => document.getElementById(id);
 let state = {networks: [], pending: null, messages: [], requests: [], choices: [], profile: null, current_network: null};
 let tab = "好友", filter = "待处理", preparing = false, ready = false, selected = null;
-let autoNetwork = null, registrationAttempted = false;
 let deferredRemoteRender = false;
 let adminView = false, adminSection = "网络", adminConfirm = null, adminUnlocking = false;
 let noteTimer, adminResultTimer, adminResultKey = null, adminResultPersistent = false;
@@ -12,8 +11,9 @@ const expandedMembers = new Set();
 const expandedSettings = new Set();
 let notifications = [], readNotifications = {};
 try { readNotifications = JSON.parse(localStorage.getItem("friend-notifications-read") || "{}"); } catch { /* Storage is optional. */ }
-let waiting = null, waitTimer, autoRetries = 0;
+let waiting = null, waitTimer, submittingControl = null, busyControl = null, lastStateSerial = 0;
 try { waiting = JSON.parse(localStorage.getItem("friend-pending-v2") || "null"); } catch { /* Storage is optional. */ }
+if (waiting) waiting.phase = "unknown"; // Reloading never resends an operation.
 const bound = Boolean(window.CONTACT_CONFIG?.token);
 function node(tag, text, parent, cls = "") {
   const e = document.createElement(tag);
@@ -21,7 +21,7 @@ function node(tag, text, parent, cls = "") {
   e.className = cls; if (parent) parent.append(e); return e;
 }
 function button(parent, text, fn, cls = "secondary") {
-  const e = node("button", text, parent, cls); e.type = "button"; e.onclick = fn; return e;
+  const e = node("button", text, parent, cls); e.type = "button"; e.onclick = event => { submittingControl = e; fn(event); }; return e;
 }
 function visibleText(text) {
   const code = "M[A-HJ-NP-Z2-9]{6}";
@@ -51,17 +51,39 @@ function rememberPending() {
     else localStorage.removeItem("friend-pending-v2");
   } catch { /* Transport still works when local storage is unavailable. */ }
 }
+function syncOperationControls() {
+  const busy = Boolean(waiting || preparing);
+  document.querySelector("main").setAttribute("aria-busy", String(busy));
+  for (const control of document.querySelectorAll("main button,main select,#modal-root button,#modal-root select")) {
+    if (["retry", "modal-retry"].includes(control.id) || control.closest(".admin-tabs,.segments")) continue;
+    if (busy && !control.disabled) { control.dataset.operationDisabled = "true"; control.disabled = true; }
+    if (!busy && control.dataset.operationDisabled) { control.disabled = false; delete control.dataset.operationDisabled; }
+  }
+}
+function operationFeedback(phase) {
+  if (busyControl?.isConnected) {
+    if (!phase) {
+      busyControl.textContent = busyControl.dataset.originalLabel;
+      busyControl.disabled = false; busyControl.removeAttribute("aria-busy");
+    } else {
+      busyControl.textContent = phase === "unknown" ? "结果待确认" : "处理中…";
+      busyControl.disabled = true; busyControl.setAttribute("aria-busy", "true");
+    }
+  }
+  if (!phase) busyControl = null;
+  syncOperationControls();
+}
 function watchPending() {
   clearTimeout(waitTimer);
   $("retry").hidden = true;
   if ($("modal-retry")) $("modal-retry").hidden = true;
   waitTimer = setTimeout(() => {
     if (!waiting) return;
-    note("仍在等待机器人响应。请检查网络；重试会使用同一请求，不会重复执行。");
-    $("retry").hidden = false;
+    waiting.phase = "unknown"; rememberPending(); operationFeedback("unknown");
+    note("尚未收到结果，未自动重试。可手动重试同一请求核对结果。");
+    $("retry").textContent = "手动重试"; $("retry").hidden = false;
     if ($("modal-retry")) $("modal-retry").hidden = false;
-    if (autoRetries < 1) { autoRetries++; resend(); }
-  }, 8000);
+  }, 15000);
 }
 function toBase64(bytes) { return btoa(String.fromCharCode(...bytes)); }
 async function seal(request) {
@@ -73,10 +95,13 @@ async function seal(request) {
 }
 async function resend() {
   if (!waiting) return;
+  if (waiting.phase === "sending") return;
+  waiting.phase = "sending"; rememberPending(); operationFeedback("sending");
+  watchPending();
   try {
     await window.webxdc.sendUpdate({payload: waiting.payload}, "");
-    if (waiting) { note("正在同步，请稍候…"); watchPending(); }
-  } catch { note("暂时无法同步，请稍后重试。"); $("retry").hidden = false; if ($("modal-retry")) $("modal-retry").hidden = false; }
+    if (waiting && waiting.phase === "sending") { waiting.phase = "waiting"; rememberPending(); }
+  } catch { if (waiting) { waiting.phase = "unknown"; rememberPending(); operationFeedback("unknown"); } note("未能确认提交结果，未自动重试。"); $("retry").textContent = "手动重试"; $("retry").hidden = false; if ($("modal-retry")) $("modal-retry").hidden = false; }
 }
 async function send(action, extra = {}) {
   if (!window.webxdc) { note("请在 Delta Chat 内打开好友助手小应用。"); return; }
@@ -90,15 +115,19 @@ async function send(action, extra = {}) {
   if (bound && !ready) { note("还未收到机器人状态，请稍等；长期无响应可发送“小程序”获取新版。"); return; }
   if (!window.webxdc.sendUpdate || !crypto.subtle) { note("当前客户端缺少所需能力，请更新 Delta Chat。"); return; }
   preparing = true;
+  busyControl = submittingControl?.isConnected && submittingControl.tagName === "BUTTON" ? submittingControl : null;
+  if (busyControl) busyControl.dataset.originalLabel = busyControl.textContent;
+  operationFeedback("sending");
+  const operationStep = state.pending?.action;
   const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
   note("正在提交…");
   try {
     const payload = await seal({token: window.CONTACT_CONFIG.token, id, action, network: state.current_network, notification_version: 1, ...extra});
-    autoRetries = 0;
-    waiting = {id, payload, kind: action, operation: extra.operation || "", command: extra.command || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
+    waiting = {id, payload, phase: "prepared", step: operationStep, network: state.current_network, kind: action, operation: extra.operation || "", command: extra.command || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
+    preparing = false;
     await resend();
-  } catch { note("提交失败，请稍后重试。"); }
-  finally { preparing = false; }
+  } catch { operationFeedback(null); note("提交失败，请稍后重试。"); }
+  finally { preparing = false; syncOperationControls(); }
 }
 const command = (name, value = "") => send("command", {command: name, value});
 function form(parent, label, submit, options = {}) {
@@ -110,7 +139,7 @@ function form(parent, label, submit, options = {}) {
   input.maxLength = options.max || 160; input.required = options.required !== false;
   if (options.multiline) input.rows = 3;
   const b = node("button", options.button || "继续", f, "primary"); b.type = "submit";
-  f.onsubmit = e => { e.preventDefault(); const value = input.value.trim(); if (options.clearOnSubmit) input.value = ""; input.blur(); submit(value); }; return input;
+  f.onsubmit = e => { e.preventDefault(); submittingControl = b; const value = input.value.trim(); if (options.clearOnSubmit) input.value = ""; input.blur(); submit(value); }; return input;
 }
 function accountFromInput(value) {
   const text = value.trim().replace(/\\&/g, "&");
@@ -298,7 +327,7 @@ function renderWizard() {
     const labels = {guide_join_code: "管理员提供的加入码", guide_nickname: "你希望大家怎么称呼你？", guide_edit_nickname: "新的昵称", guide_edit_bio: "个人介绍", guide_accept_contact: "愿意分享的 Delta Chat 地址", guide_admin_create_code: "按机器人提示设置加入码", guide_admin_rotate_code: "新加入码"};
     form(w, labels[p.action] || "按机器人回执填写", value => reply(value), {max: 500});
   }
-  const cancel = button(w, "取消", () => command("取消"), modal ? "quiet modal-cancel" : "quiet");
+  const cancel = button(w, "取消", () => setup ? send("cancel_join", {step: p.token}) : command("取消"), modal ? "quiet modal-cancel" : "quiet");
   if (modal) finishModal(w, cancel);
 }
 function renderFind(page) {
@@ -644,6 +673,7 @@ function render() {
 
   } else renderMe(page);
   renderNav();
+  syncOperationControls();
   if (modalKind !== "wizard") {
     if (tab === "我的" && adminView && state.admin?.unlocked) renderAdminConfirm();
     else if (modalKind === "admin") { adminConfirm = null; closeModal(); }
@@ -748,13 +778,19 @@ if (window.webxdc?.setUpdateListener && bound) {
       return;
     }
     if (!p || p.type !== "contact-state" || !Array.isArray(p.networks) || !Array.isArray(p.messages)) return;
+    if (Number.isInteger(update.serial)) {
+      if (update.serial <= lastStateSerial) return;
+      lastStateSerial = update.serial;
+    }
+    const firstState = !ready;
     const before = JSON.stringify({...state, at: null, receipt: null});
     const previousStep = state.pending?.action;
+    const operationStep = waiting?.step || previousStep;
     const changed = p.current_network !== state.current_network || !p.profile;
     const deletedProfile = Boolean(state.profile) && !p.profile;
     const unlockSucceeded = waiting && waiting.kind === "admin_unlock" && p.receipt?.request_id === waiting.id && p.receipt.ok;
     state = {...p, requests: p.requests || [], choices: p.choices || [], messages: unlockSucceeded ? [] : p.messages.length || changed ? p.messages : state.messages};
-    ready = true; if (changed) { selected = null; autoNetwork = null; if (deletedProfile) notifications = []; }
+    ready = true; if (changed) { selected = null; expandedMembers.clear(); expandedSettings.clear(); adminConfirm = null; if (deletedProfile) notifications = []; }
     const receivedReceipt = Boolean(waiting && p.receipt?.request_id === waiting.id);
     const adminReceipt = receivedReceipt && ["admin_open", "admin_unlock", "admin_action", "admin_select", "admin_lock"].includes(waiting.kind) ? waiting.kind : null;
     if (receivedReceipt) {
@@ -770,21 +806,21 @@ if (window.webxdc?.setUpdateListener && bound) {
       }
       const showConfirmation = waiting.openMessages && p.receipt.ok && p.pending?.action === "send_request";
       const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
-      const joiningStep = ["guide_join_code", "guide_nickname", "join"].includes(previousStep);
-      const cancelledJoin = p.receipt.ok && joiningStep && waiting.kind === "command" && waiting.command === "取消";
-      const completedJoin = p.receipt.ok && ((waiting.kind === "reply" && previousStep === "join") || ((waiting.kind === "reply" || waiting.kind === "join") && changed && p.profile && (previousStep === "guide_join_code" || waiting.kind === "join")));
+      const joiningStep = ["guide_join_code", "guide_nickname", "join"].includes(operationStep);
+      const cancelledJoin = p.receipt.ok && joiningStep && (waiting.kind === "cancel_join" || (waiting.kind === "command" && waiting.command === "取消"));
+      const completedJoin = p.receipt.ok && ((waiting.kind === "reply" && operationStep === "join") || ((waiting.kind === "reply" || waiting.kind === "join") && changed && p.profile && (operationStep === "guide_join_code" || waiting.kind === "join")));
       if (cancelledJoin) { adminView = false; tab = state.profile ? "我的" : "好友"; scrollTop(); }
       if (completedJoin) { tab = "好友"; adminView = false; scrollTop(); }
-      waiting = null; autoRetries = 0; rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
+      waiting = null; operationFeedback(null); rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
       if (showConfirmation) {
         tab = "消息"; selected = null;
         notifications.forEach(n => { readNotifications[n.id] = true; });
         try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {}
         scrollTop();
       }
-      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : cancelledJoin ? "已取消加入。" : completedJoin ? "已进入所选网络。" : "") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
-    } else if (!waiting) note("");
-    if (adminReceipt === "admin_action" || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt);
+      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : cancelledJoin ? "已取消加入。" : completedJoin ? "已进入所选网络。" : "操作完成。") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
+    } else if (!waiting && firstState) note("");
+    if (receivedReceipt || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt || changed);
     if (adminReceipt && adminView) {
       if (!p.receipt.ok) revealOperation(".admin-error, #status");
       else if (!state.admin?.unlocked) revealOperation(".admin-unlock", false);
@@ -792,10 +828,6 @@ if (window.webxdc?.setUpdateListener && bound) {
     }
     if (previousStep === "guide_recover_identity" && state.pending?.action !== previousStep) recoveryDraft = {joinCode: "", nickname: "", oldAddress: ""};
     if (receivedReceipt && previousStep !== state.pending?.action && ["guide_join_code", "guide_nickname", "join"].includes(previousStep)) scrollTop();
-    if (!waiting && !p.notifications_enabled && !registrationAttempted) {
-      registrationAttempted = true; setTimeout(() => send("refresh"), 0);
-    } else if (!waiting && p.notifications_enabled && p.profile && !p.directory && autoNetwork !== p.current_network) {
-      autoNetwork = p.current_network; setTimeout(() => send("directory", {page: 0}), 0);
-    }
+
   }, 0)).catch(() => note("状态读取失败。请重新打开，或向机器人发送“小程序”。"));
 } else note(window.webxdc ? "请先向好友助手获取应用。" : "浏览器仅可预览界面；请在 Delta Chat 中打开 .xdc 文件。");

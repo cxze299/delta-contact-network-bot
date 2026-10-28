@@ -159,12 +159,20 @@ class WebxdcBridge:
                 value = request.get("value", "")
                 if not isinstance(value, str) or len(value) > 2000:
                     raise UserError("输入内容必须为文本")
-                if request.get("network") != user["current_network_id"]:
+                if action not in {"refresh", "cancel_join"} and request.get("network") != user["current_network_id"]:
                     raise UserError("当前网络已变化，请刷新后操作")
                 if action == "start":
                     existing = conn.execute("SELECT 1 FROM pending_actions WHERE user_id=? AND expires_at>?", (user["id"], now)).fetchone()
                     if not existing:
                         self.service._begin_guidance(conn, user, now, key)
+                elif action == "cancel_join":
+                    step = request.get("step")
+                    if not isinstance(step, str):
+                        raise UserError("加入步骤无效，请刷新")
+                    pending = conn.execute("SELECT action FROM pending_actions WHERE user_id=? AND token=?", (user["id"], step)).fetchone()
+                    if not pending or pending["action"] not in {"guide_join_code", "guide_nickname", "join"}:
+                        raise UserError("该加入步骤已结束，请刷新当前状态")
+                    conn.execute("DELETE FROM pending_actions WHERE user_id=? AND token=?", (user["id"], step))
                 elif action == "join":
                     onboarding_action = True
                     self.service._pending(conn, user["id"], "guide_join_code", {}, now)
