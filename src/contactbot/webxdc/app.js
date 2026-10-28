@@ -554,8 +554,7 @@ function renderAdmin(page) {
       }
       if (m.status === "active" && data.system) actions.push([m.role === "network_admin" ? "撤销管理员" : "任命管理员", () => adminOperation(m.role === "network_admin" ? "revoke" : "appoint", {member_code: m.member_code}, "确定更改 " + m.nickname + " 的管理员权限？")]);
       adminButtonGroup(detail, actions);
-      if (m.status === "active" && m.role === "member") form(detail, "封禁原因", value => adminOperation("ban", {member_code: m.member_code, reason: value}, "确定封禁 " + m.nickname + "？"), {max: 300, button: "封禁成员"});
-      if (m.status === "active" && m.role === "network_admin" && data.system) node("p", "移除或封禁前，请先撤销管理员权限。", detail, "muted");
+      if (m.status === "active" && m.role === "network_admin" && data.system) node("p", "移除前，请先撤销管理员权限。", detail, "muted");
     }
     const paging = node("div", null, page, "pagination");
     if (data.page > 0) button(paging, "上一页", () => send("admin_select", {admin_network: current.id, page: data.page - 1}));

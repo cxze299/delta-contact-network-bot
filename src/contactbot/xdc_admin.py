@@ -12,7 +12,7 @@ from .service import UserError, _iso, _parse
 
 ITERATIONS = 250_000
 SYSTEM_ACTIONS = {"create", "rename", "appoint", "revoke", "disable", "enable"}
-NETWORK_ACTIONS = {"view_code", "rotate", "join_off", "join_on", "remove", "ban", "unban", "resolve_report", "approve_recovery", "reject_recovery", "delivery_close"}
+NETWORK_ACTIONS = {"view_code", "rotate", "join_off", "join_on", "remove", "unban", "resolve_report", "approve_recovery", "reject_recovery", "delivery_close"}
 ADMIN_COMMANDS = {
     "管理", "创建网络", "网络概况", "成员列表", "查看加入码", "更换加入码", "停用加入",
     "恢复加入", "移除成员", "封禁成员", "解除封禁", "举报列表", "处理举报", "管理记录",

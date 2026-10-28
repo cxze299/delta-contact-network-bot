@@ -152,7 +152,7 @@ def test_key_unlock_does_not_require_persistent_system_role(admin_fixture):
     assert admin.db.execute("SELECT is_system_admin FROM users WHERE actor_key='system'").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("operation", ["remove", "ban"])
+@pytest.mark.parametrize("operation", ["remove"])
 def test_removed_members_hidden_and_audit_retained(admin_fixture, operation):
     admin, member, secret, _, _ = admin_fixture
     admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
@@ -232,3 +232,13 @@ def test_delivery_uncertainty_management_is_scoped_and_never_resends(admin_fixtu
     admin.call("admin_action", operation="delivery_close", data={"outbox_id": str(item["id"]), "confirmed": "yes"})
     assert admin.snapshot()["receipt"]["ok"] and not admin.snapshot()["admin"]["deliveries"]
     assert not service.send_approved_vcard(item["id"], lambda *_: pytest.fail("resend"), account_id=1)
+
+
+def test_new_ban_is_rejected_without_removing_member(admin_fixture):
+    admin, member, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    code = member.snapshot()["profile"]["member_code"]
+    admin.call("admin_action", operation="ban", data={"member_code": code, "confirmed": "yes", "reason": "test"})
+    assert not admin.snapshot()["receipt"]["ok"]
+    assert code in {m["member_code"] for m in admin.snapshot()["admin"]["members"]}
+    assert admin.db.execute("SELECT COUNT(*) FROM bans").fetchone()[0] == 0

@@ -188,7 +188,7 @@ def create_admin_app(settings: Settings, token: str | None = None) -> FastAPI:
                 return (action_form('revoke','撤销管理员',code) + action_form('web_access','生成／重置网页账号',code)) if system else ''
             if member['status'] != 'active':
                 return '<small>成员已离开，需自行重新加入</small>'
-            return action_form('ban', '封禁成员', code + '<label>封禁原因<input name="reason" required maxlength="300" placeholder="填写原因"></label>')
+            return action_form('remove', '移除成员', code)
 
         detail = '<section class="card"><p>请先通过机器人创建网络。</p></section>'
         if selected:

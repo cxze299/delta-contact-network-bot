@@ -1946,7 +1946,7 @@ class BotService:
 
 【成员管理】
 移除成员 <成员编号>
-封禁成员 <成员编号> <原因>｜解除封禁 <成员编号>
+解除封禁 <成员编号>
 
 【审核与记录】
 举报列表｜管理记录
@@ -2154,6 +2154,8 @@ class BotService:
         )
 
     def _admin_command(self, conn, user, command, args, encrypted, now, key) -> None:
+        if command == "封禁成员":
+            raise UserError("封禁功能已停用")
         if command == "恢复申请列表":
             self._list_account_recoveries(conn, user, now, key)
             return
@@ -2469,6 +2471,8 @@ class BotService:
         self._admin_membership_action(conn, user, payload, now, key, ban=True)
 
     def _admin_membership_action(self, conn, user, payload, now, key, ban) -> None:
+        if ban:
+            raise UserError("封禁功能已停用")
         self._assert_admin_for(conn, user, payload["network_id"])
         target = conn.execute(
             "SELECT m.*,u.actor_key,u.id target_user_id FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.id=?",

@@ -153,16 +153,16 @@ def test_search_isolated_between_networks(app):
     assert output[-1][1].count("同名成员") == 1
 
 
-def test_banned_account_cannot_rejoin(app):
+def test_ban_command_is_disabled(app):
     _, code = create_network(app)
     join(app, "member", code, "成员")
     member_code = app.conn.execute(
         "SELECT member_code FROM memberships m JOIN users u ON u.id=m.user_id WHERE u.actor_key='member'"
     ).fetchone()[0]
-    pending = app.send("admin", f"封禁成员 {member_code} 违规", admin=True)
-    app.confirm_from("admin", pending)
-    output = app.send("member", f"加入 {code} 成员")
-    assert "不能加入" in output[-1][1]
+    output = app.send("admin", f"封禁成员 {member_code} 违规", admin=True)
+    assert "已停用" in output[-1][1]
+    assert app.conn.execute("SELECT count(*) FROM bans").fetchone()[0] == 0
+    assert app.conn.execute("SELECT status FROM memberships WHERE member_code=?", (member_code,)).fetchone()[0] == "active"
 
 
 def test_join_code_only_visible_in_encrypted_admin_chat(app):

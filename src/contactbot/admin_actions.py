@@ -20,6 +20,8 @@ def password_matches(password, stored):
 
 
 def execute(service, conn, actor, network_id, action, data, timestamp, *, verified_system=False):
+    if action == 'ban':
+        raise UserError('封禁功能已停用')
     key = 'web:' + secrets.token_hex(16)
     user = conn.execute('SELECT * FROM users WHERE id=?', (actor['id'],)).fetchone()
     if verified_system:

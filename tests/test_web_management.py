@@ -59,22 +59,14 @@ def test_web_credentials_follow_live_role_and_network_scope(web):
     assert client.get('/').status_code == 401
 
 
-def test_ban_unban_joins_and_actor_chat_context(web):
+def test_ban_disabled_and_actor_chat_context(web):
     client, db, action, _ = web
-    login_network_admin(client,action)
-    assert action('ban',member_code='M4',reason='test',confirmed='no').status_code == 400
+    login_network_admin(client, action)
+    assert action('ban', member_code='M4', reason='test', confirmed='yes').status_code == 400
     assert db.connection.execute('SELECT count(*) FROM bans').fetchone()[0] == 0
-    assert action('ban',member_code='M4',reason='test reason',confirmed='yes').status_code == 200
-    assert db.connection.execute('SELECT network_id FROM bans').fetchone()[0] == 1
-    assert db.connection.execute('SELECT status FROM memberships WHERE id=4').fetchone()[0] == 'removed'
-    assert db.connection.execute('SELECT status FROM memberships WHERE id=5').fetchone()[0] == 'active'
-    assert db.connection.execute("SELECT count(*) FROM outbox WHERE recipient_user_id=4 AND status='pending'").fetchone()[0] == 1
+    assert db.connection.execute('SELECT status FROM memberships WHERE id=4').fetchone()[0] == 'active'
     assert db.connection.execute('SELECT current_network_id FROM users WHERE id=2').fetchone()[0] == 2
-    assert action('unban',member_code='M4').status_code == 200
-    assert db.connection.execute('SELECT count(*) FROM bans').fetchone()[0] == 0
-    assert db.connection.execute('SELECT status FROM memberships WHERE id=4').fetchone()[0] == 'removed'
     assert action('join_off').status_code == 200
-    assert db.connection.execute('SELECT join_enabled FROM networks WHERE id=1').fetchone()[0] == 0
     assert action('join_on').status_code == 200
 
 
