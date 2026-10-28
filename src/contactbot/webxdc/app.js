@@ -83,7 +83,7 @@ function watchPending() {
     note("尚未收到结果，未自动重试。可手动重试同一请求核对结果。");
     $("retry").textContent = "手动重试"; $("retry").hidden = false;
     if ($("modal-retry")) $("modal-retry").hidden = false;
-  }, 15000);
+  }, 3000);
 }
 function toBase64(bytes) { return btoa(String.fromCharCode(...bytes)); }
 async function seal(request) {
