@@ -6,7 +6,7 @@ let tab = "好友", filter = "待处理", preparing = false, ready = false, sele
 let autoNetwork = null, registrationAttempted = false;
 let deferredRemoteRender = false;
 let adminView = false, adminSection = "网络", adminConfirm = null, adminUnlocking = false;
-let noteTimer, adminResultTimer, adminResultKey = null;
+let noteTimer, adminResultTimer, adminResultKey = null, adminResultPersistent = false;
 let recoveryDraft = {joinCode: "", nickname: "", oldAddress: ""};
 const expandedMembers = new Set();
 const expandedSettings = new Set();
@@ -93,7 +93,7 @@ async function send(action, extra = {}) {
   note("正在提交…");
   try {
     const payload = await seal({token: window.CONTACT_CONFIG.token, id, action, network: state.current_network, notification_version: 1, ...extra});
-    waiting = {id, payload, kind: action, openMessages: action === "command" && extra.command === "申请"}; rememberPending();
+    waiting = {id, payload, kind: action, operation: extra.operation || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
     await resend();
   } catch { note("提交失败，请稍后重试。"); }
   finally { preparing = false; }
@@ -519,7 +519,11 @@ function renderAdmin(page) {
   if (!sections.includes(adminSection)) adminSection = "网络";
   const tabs = node("div", null, page, "admin-tabs");
   for (const section of sections) button(tabs, section, () => { adminSection = section; adminConfirm = null; render(); }, section === adminSection ? "selected" : "quiet");
-  if (adminResultKey && state.receipt?.request_id === adminResultKey && state.messages.length) node("p", visibleText(state.messages[state.messages.length - 1]), page, "admin-result");
+  if (adminResultKey && state.receipt?.request_id === adminResultKey && state.messages.length) {
+    const result = node("div", null, page, "admin-result");
+    node("p", visibleText(state.messages[state.messages.length - 1]), result);
+    if (adminResultPersistent) button(result, "关闭", () => { adminResultKey = null; result.remove(); }, "quiet");
+  }
   page = node("section", null, page); page.id = "admin-section";
   if (!current && adminSection !== "系统") { node("div", "暂无可管理的网络。", page, "empty muted"); return; }
   if (adminSection === "网络") {
@@ -754,14 +758,18 @@ if (window.webxdc?.setUpdateListener && bound) {
     if (receivedReceipt) {
       if (adminReceipt === "admin_action" && p.messages.length) {
         adminResultKey = p.receipt.request_id;
+        if (p.receipt.ok && waiting.operation === "create") adminSection = "网络";
+        adminResultPersistent = p.receipt.ok && ["create", "view_code", "rotate"].includes(waiting.operation);
         clearTimeout(adminResultTimer);
-        adminResultTimer = setTimeout(() => {
+        if (!adminResultPersistent) adminResultTimer = setTimeout(() => {
           adminResultKey = null;
           document.querySelector(".admin-result")?.remove();
         }, 3000);
       }
       const showConfirmation = waiting.openMessages && p.receipt.ok && p.pending?.action === "send_request";
       const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
+      const completedJoin = p.receipt.ok && (previousStep === "join" || (previousStep === "guide_join_code" && changed && p.profile));
+      if (completedJoin) { tab = "好友"; adminView = false; scrollTop(); }
       waiting = null; rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
       if (showConfirmation) {
         tab = "消息"; selected = null;
@@ -769,7 +777,7 @@ if (window.webxdc?.setUpdateListener && bound) {
         try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {}
         scrollTop();
       }
-      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : "") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
+      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : completedJoin ? "已进入所选网络。" : "") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
     } else if (!waiting) note("");
     if (adminReceipt === "admin_action" || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt);
     if (adminReceipt && adminView) {

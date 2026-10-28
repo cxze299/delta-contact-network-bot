@@ -1,3 +1,3 @@
-FROM delta-contact-network-bot:feedback-3s-20261028
-COPY src/contactbot/service.py src/contactbot/admin_actions.py src/contactbot/admin_web.py src/contactbot/xdc_admin.py /venv/lib/python3.12/site-packages/contactbot/
+FROM delta-contact-network-bot:no-new-bans-20261028
+COPY src/contactbot/xdc_admin.py /venv/lib/python3.12/site-packages/contactbot/
 COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/

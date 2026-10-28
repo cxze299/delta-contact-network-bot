@@ -141,6 +141,10 @@ class XdcAdmin:
                 raise UserError("请选择网络")
             self.service._assert_admin_for(conn, user, network_id)
         result = execute(self.service, conn, user, network_id if action != "create" else None, action, data, now, verified_system=True)
+        if action == "create":
+            # SQLite serializes this creation transaction.
+            created_id = conn.execute("SELECT id FROM networks ORDER BY id DESC LIMIT 1").fetchone()[0]
+            conn.execute("INSERT OR REPLACE INTO xdc_admin_context VALUES(?,?,0)", (token, created_id))
         self.service._reply(conn, user["id"], result, key, sensitive=True)
 
     def snapshot(self, conn, user, token, now):

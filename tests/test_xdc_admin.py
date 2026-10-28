@@ -242,3 +242,32 @@ def test_new_ban_is_rejected_without_removing_member(admin_fixture):
     assert not admin.snapshot()["receipt"]["ok"]
     assert code in {m["member_code"] for m in admin.snapshot()["admin"]["members"]}
     assert admin.db.execute("SELECT COUNT(*) FROM bans").fetchone()[0] == 0
+
+
+def test_create_network_selects_it_and_creator_can_join_and_switch(admin_fixture):
+    admin, _, secret, _, _ = admin_fixture
+    admin.call("admin_open"); admin.call("admin_unlock", proof=proof(admin, secret))
+    previous = admin.snapshot()["current_network"]
+    admin.call("admin_action", operation="create", data={"name": "新网络"})
+    state = admin.snapshot()
+    assert state["receipt"]["ok"]
+    new_id = state["admin"]["current"]
+    assert new_id != previous
+    assert any(n["id"] == new_id and n["name"] == "新网络" for n in state["admin"]["networks"])
+    assert state["current_network"] == previous
+    cipher = admin.db.execute("SELECT join_code_ciphertext FROM networks WHERE id=?", (new_id,)).fetchone()[0]
+    code = admin.bridge.service._decrypt_join_code(cipher)
+    assert code in state["messages"][-1]
+    admin.call("join", value=code)
+    assert admin.snapshot()["pending"]["action"] == "guide_nickname"
+    admin.reply("新昵称")
+    assert admin.snapshot()["pending"]["action"] == "join"
+    admin.reply("1", consent=True, use_current_account=True, discoverable=True, accepts_requests=True)
+    state = admin.snapshot()
+    assert state["current_network"] == new_id
+    assert state["profile"]["nickname"] == "新昵称"
+    assert state["pending"] is None
+    admin.call("join", value="network-one-secret")
+    state = admin.snapshot()
+    assert state["current_network"] == previous
+    assert state["pending"] is None or state["pending"]["action"] == "guide_next"
