@@ -1,3 +1,2 @@
-FROM delta-contact-network-bot:admin-compact-20261028
-COPY src/contactbot/delta_adapter.py /venv/lib/python3.12/site-packages/contactbot/
+FROM delta-contact-network-bot:responsive-actions-20261028
 COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/

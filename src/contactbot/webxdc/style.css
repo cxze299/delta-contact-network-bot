@@ -71,3 +71,8 @@ main .card button:not(.ios-switch):not(.quiet),main details button:not(.ios-swit
 button.friend-exchange{min-height:40px;padding:8px 12px}
 .admin-actions button,.setting button:not(.ios-switch),.pagination button{min-height:44px;font-size:14px}
 .admin-mode{grid-template-rows:minmax(0,1fr) auto}
+
+/* Buttons never use an outline or border; keyboard focus uses contrast and text. */
+button,button:focus,button:focus-visible{border:0;outline:0}
+button:focus-visible{filter:brightness(.8);text-decoration:underline;text-underline-offset:3px}
+.operation-focus{outline:0}

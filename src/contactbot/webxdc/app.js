@@ -6,6 +6,7 @@ let tab = "好友", filter = "待处理", preparing = false, ready = false, sele
 let autoNetwork = null, registrationAttempted = false;
 let deferredRemoteRender = false;
 let adminView = false, adminSection = "网络", adminConfirm = null, adminUnlocking = false;
+let noteTimer, adminResultTimer, adminResultKey = null;
 let recoveryDraft = {joinCode: "", nickname: "", oldAddress: ""};
 const expandedMembers = new Set();
 const expandedSettings = new Set();
@@ -33,10 +34,16 @@ function visibleText(text) {
     .replace(new RegExp("成员\\s+" + code, "g"), "成员");
 }
 function note(text) {
+  clearTimeout(noteTimer);
   text = visibleText(text);
   $("status").textContent = text; $("status").hidden = !text;
   const modalStatus = document.getElementById("modal-status");
   if (modalStatus) { modalStatus.textContent = text; modalStatus.hidden = !text; }
+  if (text) noteTimer = setTimeout(() => {
+    $("status").hidden = true;
+    const current = document.getElementById("modal-status");
+    if (current) current.hidden = true;
+  }, 5000);
 }
 function rememberPending() {
   try {
@@ -512,7 +519,7 @@ function renderAdmin(page) {
   if (!sections.includes(adminSection)) adminSection = "网络";
   const tabs = node("div", null, page, "admin-tabs");
   for (const section of sections) button(tabs, section, () => { adminSection = section; adminConfirm = null; render(); }, section === adminSection ? "selected" : "quiet");
-  if (state.messages.length) node("p", visibleText(state.messages[state.messages.length - 1]), page, "admin-result");
+  if (adminResultKey && state.receipt?.request_id === adminResultKey && state.messages.length) node("p", visibleText(state.messages[state.messages.length - 1]), page, "admin-result");
   page = node("section", null, page); page.id = "admin-section";
   if (!current && adminSection !== "系统") { node("div", "暂无可管理的网络。", page, "empty muted"); return; }
   if (adminSection === "网络") {
@@ -746,6 +753,14 @@ if (window.webxdc?.setUpdateListener && bound) {
     const receivedReceipt = Boolean(waiting && p.receipt?.request_id === waiting.id);
     const adminReceipt = receivedReceipt && ["admin_open", "admin_unlock", "admin_action", "admin_select", "admin_lock"].includes(waiting.kind) ? waiting.kind : null;
     if (receivedReceipt) {
+      if (adminReceipt === "admin_action" && p.messages.length) {
+        adminResultKey = p.receipt.request_id;
+        clearTimeout(adminResultTimer);
+        adminResultTimer = setTimeout(() => {
+          adminResultKey = null;
+          document.querySelector(".admin-result")?.remove();
+        }, 15000);
+      }
       const showConfirmation = waiting.openMessages && p.receipt.ok && p.pending?.action === "send_request";
       const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
       waiting = null; rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
@@ -757,7 +772,7 @@ if (window.webxdc?.setUpdateListener && bound) {
       }
       note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : "") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
     } else if (!waiting) note("");
-    if (before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt);
+    if (adminReceipt === "admin_action" || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt);
     if (adminReceipt && adminView) {
       if (!p.receipt.ok) revealOperation(".admin-error, #status");
       else if (!state.admin?.unlocked) revealOperation(".admin-unlock", false);
