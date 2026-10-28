@@ -418,6 +418,7 @@ class WebxdcBridge:
         for instance in instances:
             with self.service.db.transaction() as conn:
                 receipt = conn.execute("SELECT request_id,ok FROM xdc_receipts WHERE token=?", (instance["token"],)).fetchone()
+                recent_receipts = conn.execute("SELECT q.request_id,r.ok FROM xdc_requests q JOIN xdc_request_results r ON r.token=q.token AND r.request_id=q.request_id WHERE q.token=? ORDER BY q.rowid DESC LIMIT 100", (instance["token"],)).fetchall()
                 directory = conn.execute("SELECT page FROM xdc_directory WHERE token=? AND network_id=?", (instance["token"], user["current_network_id"])).fetchone()
                 payload["directory"] = None
                 if profile and conn.execute("SELECT 1 FROM memberships m JOIN networks n ON n.id=m.network_id JOIN users u ON u.id=m.user_id WHERE m.user_id=? AND m.network_id=? AND m.status='active' AND n.status='active' AND u.current_network_id=m.network_id", (user["id"], user["current_network_id"])).fetchone():
@@ -430,6 +431,7 @@ class WebxdcBridge:
                 payload["notifications_enabled"] = bool(instance["notifications_enabled"])
                 payload["admin"] = self.admin.snapshot(conn, user, instance["token"], _now())
             payload["receipt"] = dict(receipt) if receipt else None
+            payload["recent_receipts"] = [dict(row) for row in recent_receipts]
             # Include acknowledgements even when the business snapshot is unchanged.
             digest = hashlib.sha256(json.dumps({k: v for k, v in payload.items() if k != "at"}, sort_keys=True).encode()).hexdigest()
             identity = (incoming.account_id, instance["message_id"])

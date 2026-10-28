@@ -12,6 +12,9 @@ const expandedSettings = new Set();
 let notifications = [], readNotifications = {};
 try { readNotifications = JSON.parse(localStorage.getItem("friend-notifications-read") || "{}"); } catch { /* Storage is optional. */ }
 let waiting = null, waitTimer, submittingControl = null, busyControl = null, lastStateSerial = 0;
+let dismissedStep = null;
+let unresolved = [];
+try { unresolved = JSON.parse(localStorage.getItem("friend-unresolved-v1") || "[]"); if (!Array.isArray(unresolved)) unresolved = []; } catch { unresolved = []; }
 try { waiting = JSON.parse(localStorage.getItem("friend-pending-v2") || "null"); } catch { /* Storage is optional. */ }
 if (waiting) waiting.phase = "unknown"; // Reloading never resends an operation.
 const bound = Boolean(window.CONTACT_CONFIG?.token);
@@ -51,11 +54,21 @@ function rememberPending() {
     else localStorage.removeItem("friend-pending-v2");
   } catch { /* Transport still works when local storage is unavailable. */ }
 }
+function rememberUnresolved() {
+  try { localStorage.setItem("friend-unresolved-v1", JSON.stringify(unresolved)); } catch { /* Storage is optional. */ }
+}
+function markUnknown() {
+  if (!waiting) return;
+  if (!unresolved.some(item => item.id === waiting.id)) unresolved.push(waiting);
+  waiting = null; rememberPending(); rememberUnresolved(); operationFeedback(null);
+  note("操作结果暂未确认，请稍后查看。");
+  render();
+}
 function syncOperationControls() {
   const busy = Boolean(waiting || preparing);
   document.querySelector("main").setAttribute("aria-busy", String(busy));
   for (const control of document.querySelectorAll("main button,main select,#modal-root button,#modal-root select")) {
-    if (["retry", "modal-retry"].includes(control.id) || control.closest(".admin-tabs,.segments")) continue;
+    if (control.classList.contains("admin-back") || control.classList.contains("wizard-back") || control.closest(".admin-tabs,.segments")) continue;
     if (busy && !control.disabled) { control.dataset.operationDisabled = "true"; control.disabled = true; }
     if (!busy && control.dataset.operationDisabled) { control.disabled = false; delete control.dataset.operationDisabled; }
   }
@@ -75,14 +88,9 @@ function operationFeedback(phase) {
 }
 function watchPending() {
   clearTimeout(waitTimer);
-  $("retry").hidden = true;
-  if ($("modal-retry")) $("modal-retry").hidden = true;
   waitTimer = setTimeout(() => {
     if (!waiting) return;
-    waiting.phase = "unknown"; rememberPending(); operationFeedback("unknown");
-    note("尚未收到结果，未自动重试。可手动重试同一请求核对结果。");
-    $("retry").textContent = "手动重试"; $("retry").hidden = false;
-    if ($("modal-retry")) $("modal-retry").hidden = false;
+    markUnknown();
   }, 3000);
 }
 function toBase64(bytes) { return btoa(String.fromCharCode(...bytes)); }
@@ -96,12 +104,13 @@ async function seal(request) {
 async function resend() {
   if (!waiting) return;
   if (waiting.phase === "sending") return;
+  const requestId = waiting.id;
   waiting.phase = "sending"; rememberPending(); operationFeedback("sending");
   watchPending();
   try {
     await window.webxdc.sendUpdate({payload: waiting.payload}, "");
-    if (waiting && waiting.phase === "sending") { waiting.phase = "waiting"; rememberPending(); }
-  } catch { if (waiting) { waiting.phase = "unknown"; rememberPending(); operationFeedback("unknown"); } note("未能确认提交结果，未自动重试。"); $("retry").textContent = "手动重试"; $("retry").hidden = false; if ($("modal-retry")) $("modal-retry").hidden = false; }
+    if (waiting?.id === requestId && waiting.phase === "sending") { waiting.phase = "waiting"; rememberPending(); }
+  } catch { if (waiting?.id === requestId) markUnknown(); }
 }
 async function send(action, extra = {}) {
   if (!window.webxdc) { note("请在 Delta Chat 内打开好友助手小应用。"); return; }
@@ -111,7 +120,7 @@ async function send(action, extra = {}) {
     catch { note("请在好友助手私聊发送一次“小程序”。"); }
     return;
   }
-  if (waiting) { note("上一项操作正在同步，请稍候。等待过久可以重试同一请求。"); return; }
+  if (waiting) { note("上一项操作尚未确认，请稍候。"); return; }
   if (bound && !ready) { note("还未收到机器人状态，请稍等；长期无响应可发送“小程序”获取新版。"); return; }
   if (!window.webxdc.sendUpdate || !crypto.subtle) { note("当前客户端缺少所需能力，请更新 Delta Chat。"); return; }
   preparing = true;
@@ -122,8 +131,13 @@ async function send(action, extra = {}) {
   const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
   note("正在提交…");
   try {
+    const fingerprint = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({action, network: state.current_network, ...extra})));
+    const signature = Array.from(new Uint8Array(fingerprint), n => n.toString(16).padStart(2, "0")).join("");
+    if (unresolved.some(item => item.signature === signature || (!item.signature && item.kind === action))) {
+      preparing = false; operationFeedback(null); note("此前相同操作尚未确认，请稍后查看。"); return;
+    }
     const payload = await seal({token: window.CONTACT_CONFIG.token, id, action, network: state.current_network, notification_version: 1, ...extra});
-    waiting = {id, payload, phase: "prepared", step: operationStep, network: state.current_network, kind: action, operation: extra.operation || "", command: extra.command || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
+    waiting = {id, payload, signature, phase: "prepared", step: operationStep, network: state.current_network, kind: action, operation: extra.operation || "", command: extra.command || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
     preparing = false;
     await resend();
   } catch { operationFeedback(null); note("提交失败，请稍后重试。"); }
@@ -232,7 +246,6 @@ function finishModal(dialog, cancel) {
   for (const control of controls) if (control !== cancel) actions.append(control);
   if (cancel) actions.prepend(cancel);
   const status = node("p", $("status").hidden ? "" : $("status").textContent, dialog, "modal-status"); status.id = "modal-status"; status.setAttribute("role", "status"); status.hidden = !status.textContent;
-  const retry = button(dialog, "重试同步", resend, "quiet modal-retry"); retry.id = "modal-retry"; retry.hidden = $("retry").hidden;
   const focus = controls.find(el => el.textContent === dialog.dataset.previousFocus) || cancel || controls[0] || dialog;
   if (focus === dialog) dialog.tabIndex = -1;
   focus.focus({preventScroll: true}); modalBackground(true);
@@ -288,6 +301,7 @@ function renderWizard() {
   if (!modal && modalKind === "wizard") closeModal();
   if (!p || ["guide_next", "guide_profile", "guide_choose_target", "guide_search", "guide_contact_choice", "guide_contact_manual", "guide_privacy_choice"].includes(p.action)) return;
   const setup = ["guide_join_code", "guide_nickname", "join"].includes(p.action);
+  if (dismissedStep === p.token) { if (modalKind === "wizard") closeModal(); return; }
   const titles = {guide_join_code: "加入网络", guide_nickname: "怎么称呼你？", join: "完成设置", guide_recover_identity: "恢复原账号", send_request: "确认好友申请", send_vcard_request: "确认发送名片", accept_request: "确认交换", leave: "退出网络", delete: "删除个人数据", rotate_code: "更换加入码", remove_member: "移除成员", ban_member: "封禁成员", disable_network: "停用网络"};
   const w = modal ? openModal("wizard", p.action + ":" + p.token, titles[p.action] || "确认操作") : wizard;
   if (!modal) { w.className = setup ? "card onboarding" : "card confirmation"; node("h2", titles[p.action] || "完成当前操作", w); }
@@ -327,7 +341,10 @@ function renderWizard() {
     const labels = {guide_join_code: "管理员提供的加入码", guide_nickname: "你希望大家怎么称呼你？", guide_edit_nickname: "新的昵称", guide_edit_bio: "个人介绍", guide_accept_contact: "愿意分享的 Delta Chat 地址", guide_admin_create_code: "按机器人提示设置加入码", guide_admin_rotate_code: "新加入码"};
     form(w, labels[p.action] || "按机器人回执填写", value => reply(value), {max: 500});
   }
-  const cancel = button(w, "取消", () => setup ? send("cancel_join", {step: p.token}) : command("取消"), modal ? "quiet modal-cancel" : "quiet");
+  const cancel = button(w, waiting ? "返回" : "取消", () => {
+    if (waiting || preparing) { dismissedStep = p.token; closeModal(); render(); return; }
+    setup ? send("cancel_join", {step: p.token}) : command("取消");
+  }, modal ? "quiet modal-cancel wizard-back" : "quiet wizard-back");
   if (modal) finishModal(w, cancel);
 }
 function renderFind(page) {
@@ -482,7 +499,12 @@ function renderMe(page) {
   const info = settingsDisclosure(page, "隐私说明与使用帮助"); privacy(info);
   node("p", "仅公开资料的成员会出现在目录中。申请 7 天后过期；双方确认后交换联系方式，请自行核验身份。", info, "muted");
   node("p", "点击按钮即可操作，结果自动同步。不需要返回聊天发送指令，也不需要网页后台账号。首次获取或更新时才需发送“小程序”。", info, "muted");
-  button(page, "管理网络 ›", () => { expandedSettings.clear(); adminView = true; adminConfirm = null; render(); send("admin_open"); }, "admin-entry");
+  button(page, "管理网络 ›", () => {
+    expandedSettings.clear(); adminView = true; adminConfirm = null; render(); scrollTop();
+    // A complete snapshot is already available locally; opening the page does
+    // not need another network round trip. A new instance needs a context.
+    if (!state.admin?.unlocked || !state.admin?.system || (state.admin.networks?.length && state.admin.current == null)) send("admin_open");
+  }, "admin-entry");
 }
 function adminOperation(operation, data = {}, question = "") {
   if (question) {
@@ -654,7 +676,7 @@ function render() {
   const page = $("page"), wizard = $("wizard");
   if (wizard.parentElement === page) page.parentElement.insertBefore(wizard, page);
   renderWizard(); page.replaceChildren();
-  const setup = bound && ready && ["guide_join_code", "guide_nickname", "join"].includes(state.pending?.action);
+  const setup = bound && ready && dismissedStep !== state.pending?.token && ["guide_join_code", "guide_nickname", "join"].includes(state.pending?.action);
   page.hidden = setup;
   if (setup) {
     // Only the active onboarding step is shown.
@@ -719,8 +741,7 @@ function renderFromRemote(force) {
   deferredRemoteRender = false;
   render();
 }
-$("refresh").onclick = () => waiting ? resend() : send("refresh");
-$("retry").onclick = resend;
+$("refresh").onclick = () => send("refresh");
 let viewportFrame;
 let keyboardScroll = null;
 let restingHeight = document.documentElement.clientHeight || window.innerHeight;
@@ -779,7 +800,7 @@ document.addEventListener("focusout", () => {
   }, ms));
 });
 fitViewport();
-render(); if (waiting) watchPending();
+if (waiting) markUnknown(); else render();
 if (window.webxdc?.setUpdateListener && bound) {
   Promise.resolve(window.webxdc.setUpdateListener(update => {
     const p = update.payload;
@@ -795,6 +816,12 @@ if (window.webxdc?.setUpdateListener && bound) {
       lastStateSerial = update.serial;
     }
     const firstState = !ready;
+    const settled = (p.recent_receipts || []).filter(receipt => unresolved.some(item => item.id === receipt.request_id));
+    if (settled.length) {
+      unresolved = unresolved.filter(item => !settled.some(receipt => receipt.request_id === item.id));
+      rememberUnresolved();
+      note(settled.every(receipt => receipt.ok) ? "之前的操作已完成。" : "之前的操作未完成。");
+    }
     const before = JSON.stringify({...state, at: null, receipt: null});
     const previousStep = state.pending?.action;
     const operationStep = waiting?.step || previousStep;
@@ -825,7 +852,7 @@ if (window.webxdc?.setUpdateListener && bound) {
       if (p.receipt.ok && waiting.kind === "command" && waiting.command === "切换网络") { tab = "好友"; adminView = false; scrollTop(); }
       if (cancelledJoin) { adminView = false; tab = state.profile ? "我的" : "好友"; scrollTop(); }
       if (completedJoin) { tab = "好友"; adminView = false; scrollTop(); }
-      waiting = null; operationFeedback(null); rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
+      waiting = null; operationFeedback(null); rememberPending(); clearTimeout(waitTimer);
       if (showConfirmation) {
         tab = "消息"; selected = null;
         notifications.forEach(n => { readNotifications[n.id] = true; });
@@ -833,12 +860,12 @@ if (window.webxdc?.setUpdateListener && bound) {
         scrollTop();
       }
       note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : cancelledJoin ? "已取消加入。" : completedJoin ? "已进入所选网络。" : "操作完成。") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
-    } else if (!waiting && firstState) note("");
+    } else if (!waiting && firstState && !settled.length) note("");
     if (receivedReceipt || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt || changed);
     if (adminReceipt && adminView) {
       if (!p.receipt.ok) revealOperation(".admin-error, #status");
       else if (!state.admin?.unlocked) revealOperation(".admin-unlock", false);
-      else revealOperation(adminReceipt === "admin_action" ? ".admin-result" : "#admin-section", false);
+      else if (adminReceipt === "admin_action") revealOperation(".admin-result", false);
     }
     if (previousStep === "guide_recover_identity" && state.pending?.action !== previousStep) recoveryDraft = {joinCode: "", nickname: "", oldAddress: ""};
     if (receivedReceipt && previousStep !== state.pending?.action && ["guide_join_code", "guide_nickname", "join"].includes(previousStep)) scrollTop();

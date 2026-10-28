@@ -847,3 +847,14 @@ def test_stale_network_can_refresh_but_cannot_mutate_other_network(clients):
     assert not alice.snapshot()["receipt"]["ok"]
     assert alice.snapshot()["profile"]["discoverable"]
     assert len(alice.snapshot()["networks"]) == 2
+
+
+def test_snapshot_keeps_recent_request_results_for_reconciliation(clients):
+    alice, _ = clients
+    alice.join()
+    old = alice.call('refresh')
+    old_id = json.loads(old.text[len(PREFIX):])['id']
+    alice.call('refresh')
+    state = alice.snapshot()
+    assert state['receipt']['request_id'] != old_id
+    assert {'request_id': old_id, 'ok': 1} in state['recent_receipts']
