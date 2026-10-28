@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from deltachat2 import Bot, MessageData, NewMsgEvent, Rpc, events
-from deltachat2.types import ChatType, EventTypeSecurejoinInviterProgress
+from deltachat2.types import ChatType, EventTypeSecurejoinInviterProgress, EventTypeWebxdcStatusUpdate
 
 from .delivery import DeliveryNotStarted, filename as delivery_filename
 from .identity import public_key_fingerprint
@@ -24,6 +24,7 @@ class DeltaAdapter:
         self.settings = settings
         self.log = logging.getLogger("contactbot.delta")
         self._outbox_lock = threading.Lock()
+        self._xdc_wakeup = threading.Event()
         self.webxdc = WebxdcBridge(rpc, service, require_verified=settings.require_verified, identity_key=settings.actor_key, identity_resolver=self._identity_message)
         hooks = events.HookCollection()
         hooks.on(events.NewMessage)(self._on_message)
@@ -32,6 +33,7 @@ class DeltaAdapter:
                 func=lambda event: isinstance(event, EventTypeSecurejoinInviterProgress)
             )
         )(self._on_securejoin)
+        hooks.on(events.RawEvent(func=lambda event: isinstance(event, EventTypeWebxdcStatusUpdate)))(self._on_webxdc_update)
         self.bot = Bot(rpc, hooks)
 
     def run_forever(self, account_id: int) -> None:
@@ -44,6 +46,7 @@ class DeltaAdapter:
             self.bot.run_forever(account_id)
         finally:
             stop.set()
+            self._xdc_wakeup.set()
             worker.join(timeout=5)
 
     def _identity_message(self, incoming):
@@ -107,13 +110,19 @@ class DeltaAdapter:
             except Exception as exc:  # noqa: BLE001 - isolate failed contacts without private RPC logs
                 self.log.warning("补发小程序暂未完成，message_id=%s（%s）", message_id, type(exc).__name__)
 
+    def _on_webxdc_update(self, _bot, _account_id, _event):
+        # Wake the existing serialized worker; the event itself is not trusted.
+        self._xdc_wakeup.set()
+
     def _poll_outbox(self, account_id, stop):
         while not stop.is_set():
+            self._xdc_wakeup.clear()
             try:
                 self._drain_outbox(account_id)
             except Exception:
                 self.log.exception('待发送队列暂不可用，将自动重试')
-            stop.wait(3)
+            if not stop.is_set():
+                self._xdc_wakeup.wait(3)
 
     def _on_message(self, _bot: Bot, account_id: int, event: NewMsgEvent) -> None:
         message = event.msg

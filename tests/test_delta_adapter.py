@@ -14,6 +14,7 @@ def test_approved_vcard_contains_only_consented_fields():
 def test_web_outbox_is_polled_without_incoming_messages():
     import threading
     adapter = object.__new__(DeltaAdapter)
+    adapter._xdc_wakeup = threading.Event()
     stop = threading.Event()
     calls = []
     def drain(account_id):
@@ -123,3 +124,42 @@ def test_approved_card_contains_only_authorized_contact_and_key(tmp_path):
     with pytest.raises(RuntimeError):
         adapter._send_approved_vcard(1, item, "alice@example.org", "Alice")
     assert len(captured) == 1
+
+
+def test_webxdc_update_wakes_serialized_worker_without_trusting_event():
+    import threading
+    adapter = object.__new__(DeltaAdapter)
+    adapter._xdc_wakeup = threading.Event()
+    adapter._on_webxdc_update(None, 7, object())
+    assert adapter._xdc_wakeup.is_set()
+
+
+def test_webxdc_event_wakes_waiting_worker_before_poll_timeout():
+    import threading
+    adapter = object.__new__(DeltaAdapter)
+    adapter._xdc_wakeup = threading.Event()
+    stop = threading.Event()
+    first = threading.Event()
+    second = threading.Event()
+    calls = []
+
+    def drain(account_id):
+        calls.append(account_id)
+        if len(calls) == 1:
+            first.set()
+        else:
+            second.set()
+            stop.set()
+
+    adapter._drain_outbox = drain
+    worker = threading.Thread(target=adapter._poll_outbox, args=(7, stop))
+    worker.start()
+    try:
+        assert first.wait(1)
+        adapter._on_webxdc_update(None, 7, object())
+        assert second.wait(1)
+        assert calls == [7, 7]
+    finally:
+        stop.set()
+        adapter._xdc_wakeup.set()
+        worker.join(timeout=2)
