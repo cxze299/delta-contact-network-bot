@@ -1,2 +1,3 @@
-FROM delta-contact-network-bot:reliability-20261028
-COPY src/contactbot/ /venv/lib/python3.12/site-packages/contactbot/
+FROM delta-contact-network-bot:identity-delivery-20261028
+COPY src/contactbot/webxdc_bridge.py /venv/lib/python3.12/site-packages/contactbot/webxdc_bridge.py
+COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/

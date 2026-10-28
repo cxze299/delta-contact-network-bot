@@ -244,6 +244,8 @@ class WebxdcBridge:
                         if use_current:
                             conn.execute("UPDATE memberships SET share_contact=?,share_version=share_version+1,updated_at=? WHERE user_id=? AND network_id=?", (incoming.contact_address.strip(), now, user["id"], payload["network_id"]))
                         conn.execute("UPDATE outbox SET body=? WHERE dedupe_key=?", ("设置完成，可以开始认识好友了。" if use_current else "已加入网络，请完成账号设置。", f"{key}:{user['id']}"))
+                    elif pending["action"] == "send_vcard_request":
+                        self.service._guided_reply(conn, user, pending, "确认" if value == "1" else value, True, incoming.contact_address, now, key)
                     elif pending["action"].startswith("guide_"):
                         self.service._guided_reply(conn, user, pending, value, True, incoming.contact_address, now, key)
                         if pending["action"] == "guide_join_code" and conn.execute("SELECT 1 FROM pending_actions WHERE user_id=? AND action='guide_join_code'", (user["id"],)).fetchone():

@@ -679,7 +679,7 @@ def test_directory_clamps_stale_page_without_exposing_hidden_members(clients):
     assert [m["nickname"] for m in state["members"]] == ["bob"]
 
 def test_reissue_only_completed_exchange_and_still_checks_blocks(clients):
-    from contactbot.service import APPROVED_CONTACT_VCARD, _now
+    from contactbot.service import APPROVED_CONTACT_VCARD
     alice, bob = clients
     alice.join(); bob.join()
     public_id = start_request_with_current_contact(alice, bob)
@@ -738,3 +738,17 @@ def test_direct_exchange_replaces_pending_only_when_both_enabled(clients):
     assert alice.snapshot()["receipt"]["ok"]
     assert alice.db.execute("SELECT status FROM contact_requests WHERE public_id=?",(old_id,)).fetchone()[0] == "invalid"
     assert alice.db.execute("SELECT count(*) FROM contact_requests WHERE status='processing'").fetchone()[0] == 1
+
+
+def test_existing_vcard_confirmation_can_be_submitted_from_modal(clients):
+    from contactbot.service import _now
+    alice, bob = clients
+    alice.join(); bob.join()
+    with alice.bridge.service.db.transaction() as conn:
+        user = conn.execute("SELECT * FROM users WHERE actor_key='alice'").fetchone()
+        target = conn.execute("SELECT m.id FROM memberships m JOIN users u ON u.id=m.user_id WHERE u.actor_key='bob'").fetchone()[0]
+        alice.bridge.service._pending(conn, user["id"], "send_vcard_request", {"target_id": target}, _now())
+    alice.reply("1")
+    state = alice.snapshot()
+    assert state["receipt"]["ok"], state["messages"]
+    assert alice.db.execute("SELECT request_kind FROM contact_requests").fetchone()[0] == "vcard"

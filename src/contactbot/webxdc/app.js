@@ -20,7 +20,11 @@ function node(tag, text, parent, cls = "") {
 function button(parent, text, fn, cls = "secondary") {
   const e = node("button", text, parent, cls); e.type = "button"; e.onclick = fn; return e;
 }
-function note(text) { $("status").textContent = text; $("status").hidden = !text; }
+function note(text) {
+  $("status").textContent = text; $("status").hidden = !text;
+  const modalStatus = document.getElementById("modal-status");
+  if (modalStatus) { modalStatus.textContent = text; modalStatus.hidden = !text; }
+}
 function rememberPending() {
   try {
     if (waiting) localStorage.setItem("friend-pending-v2", JSON.stringify(waiting));
@@ -30,10 +34,12 @@ function rememberPending() {
 function watchPending() {
   clearTimeout(waitTimer);
   $("retry").hidden = true;
+  if ($("modal-retry")) $("modal-retry").hidden = true;
   waitTimer = setTimeout(() => {
     if (!waiting) return;
     note("仍在等待机器人响应。请检查网络；重试会使用同一请求，不会重复执行。");
     $("retry").hidden = false;
+    if ($("modal-retry")) $("modal-retry").hidden = false;
   }, 30000);
 }
 function toBase64(bytes) { return btoa(String.fromCharCode(...bytes)); }
@@ -49,7 +55,7 @@ async function resend() {
   try {
     await window.webxdc.sendUpdate({payload: waiting.payload}, "");
     if (waiting) { note("正在同步，请稍候…"); watchPending(); }
-  } catch { note("暂时无法同步，请稍后重试。"); $("retry").hidden = false; }
+  } catch { note("暂时无法同步，请稍后重试。"); $("retry").hidden = false; if ($("modal-retry")) $("modal-retry").hidden = false; }
 }
 async function send(action, extra = {}) {
   if (!window.webxdc) { note("请在 Delta Chat 内打开好友助手小应用。"); return; }
@@ -118,14 +124,93 @@ function privacy(parent) {
   node("p", "机器人服务端可以处理你发送的数据。只收集昵称、介绍及必要账号标识；目录不展示联系方式。", parent, "muted");
   node("p", "联系方式仅按你的授权分享；交付后无法从接收方设备收回。小应用更新留存在聊天历史中，删除服务器数据不会自动删除设备上的历史，请自行删除旧的小应用消息。", parent, "muted");
 }
+// Dialogs live outside the scrollable page so they stay in the visible viewport.
+const modalRoot = document.createElement("div");
+modalRoot.id = "modal-root"; modalRoot.className = "modal-root"; modalRoot.hidden = true;
+document.body.append(modalRoot);
+let modalKind = "", modalKey = "", modalOpener = null, modalOpenerInfo = null;
+function modalBackground(disabled) {
+  for (const region of [document.querySelector(".topbar"), document.querySelector("main"), $("nav")]) {
+    region.inert = disabled;
+  }
+}
+function closeModal(restoreFocus = true) {
+  if (!modalKind) return;
+  modalRoot.hidden = true; modalRoot.replaceChildren();
+  modalBackground(false); modalKind = ""; modalKey = "";
+  const opener = modalOpener, info = modalOpenerInfo; modalOpener = null; modalOpenerInfo = null;
+  if (restoreFocus) requestAnimationFrame(() => {
+    if (modalKind) return;
+    let target = opener?.isConnected ? opener : null;
+    if (!target && info?.label) {
+      const scope = info.member ? document.querySelector('[data-member-code="' + CSS.escape(info.member) + '"]') : document.querySelector("main");
+      target = Array.from((scope || document.querySelector("main")).querySelectorAll("button,summary")).find(el => el.textContent.trim() === info.label);
+    }
+    if (target) target.focus({preventScroll: true});
+  });
+}
+function openModal(kind, key, title) {
+  const same = modalKind === kind && modalKey === key;
+  const previous = same && modalRoot.contains(document.activeElement) ? document.activeElement.textContent : "";
+  if (!modalKind) {
+    modalOpener = document.activeElement;
+    modalOpenerInfo = {label: modalOpener?.textContent?.trim() || "", member: modalOpener?.closest?.("[data-member-code]")?.dataset.memberCode || ""};
+  }
+  modalKind = kind; modalKey = key;
+  modalRoot.replaceChildren(); modalRoot.hidden = false;
+  const dialog = node("section", null, modalRoot, "modal-dialog");
+  dialog.id = kind === "admin" ? "admin-confirm" : "wizard-confirm";
+  dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "modal-title");
+  const heading = node("h2", title, dialog); heading.id = "modal-title";
+  dialog.dataset.previousFocus = previous;
+  return dialog;
+}
+function finishModal(dialog, cancel) {
+  const actions = node("div", null, dialog, "modal-actions");
+  const controls = Array.from(dialog.children).filter(el => el.tagName === "BUTTON");
+  for (const control of controls) if (control !== cancel) actions.append(control);
+  if (cancel) actions.prepend(cancel);
+  const status = node("p", $("status").hidden ? "" : $("status").textContent, dialog, "modal-status"); status.id = "modal-status"; status.setAttribute("role", "status"); status.hidden = !status.textContent;
+  const retry = button(dialog, "重试同步", resend, "quiet modal-retry"); retry.id = "modal-retry"; retry.hidden = $("retry").hidden;
+  const focus = controls.find(el => el.textContent === dialog.dataset.previousFocus) || cancel || controls[0] || dialog;
+  if (focus === dialog) dialog.tabIndex = -1;
+  focus.focus({preventScroll: true}); modalBackground(true);
+}
+modalRoot.addEventListener("keydown", event => {
+  const controls = Array.from(modalRoot.querySelectorAll("button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[tabindex='0']")).filter(el => el.getClientRects().length);
+  if (event.key === "Escape") { event.preventDefault(); modalRoot.querySelector(".modal-cancel")?.click(); }
+  if (event.key !== "Tab" || !controls.length) return;
+  const first = controls[0], last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+function renderAdminConfirm() {
+  if (!adminConfirm) { if (modalKind === "admin") closeModal(); return; }
+  const key = adminConfirm.operation + ":" + JSON.stringify(adminConfirm.data);
+  if (modalKind === "admin" && modalKey === key) return;
+  const dialog = openModal("admin", key, "确认操作");
+  node("p", adminConfirm.question, dialog);
+  button(dialog, "确认", () => {
+    if (!adminConfirm) return;
+    const c = adminConfirm; adminConfirm = null; closeModal();
+    send("admin_action", {operation: c.operation, data: {...c.data, confirmed: "yes"}});
+  }, "danger");
+  const cancel = button(dialog, "取消", () => { adminConfirm = null; closeModal(); }, "quiet modal-cancel");
+  finishModal(dialog, cancel);
+}
+
 function renderWizard() {
-  const w = $("wizard"); w.replaceChildren(); const p = state.pending;
-  w.className = "";
+  const wizard = $("wizard"); wizard.replaceChildren(); const p = state.pending;
+  wizard.className = "";
+  const confirmations = ["send_request", "send_vcard_request", "accept_request", "leave", "delete", "rotate_code", "remove_member", "ban_member", "disable_network"];
+  const modal = Boolean(p && confirmations.includes(p.action));
+  if (!modal && modalKind === "wizard") closeModal();
   if (!p || ["guide_next", "guide_profile", "guide_choose_target", "guide_search", "guide_contact_choice", "guide_contact_manual", "guide_privacy_choice"].includes(p.action)) return;
   const setup = ["guide_join_code", "guide_nickname", "join"].includes(p.action);
-  w.className = setup ? "card onboarding" : "card confirmation";
-  const titles = {guide_join_code: "加入网络", guide_nickname: "怎么称呼你？", join: "完成设置", send_request: "确认好友申请", accept_request: "确认交换", leave: "退出网络", delete: "删除个人数据"};
-  node("h2", titles[p.action] || "完成当前操作", w);
+  const titles = {guide_join_code: "加入网络", guide_nickname: "怎么称呼你？", join: "完成设置", send_request: "确认好友申请", send_vcard_request: "确认发送名片", accept_request: "确认交换", leave: "退出网络", delete: "删除个人数据", rotate_code: "更换加入码", remove_member: "移除成员", ban_member: "封禁成员", disable_network: "停用网络"};
+  const w = modal ? openModal("wizard", p.action + ":" + p.token, titles[p.action] || "确认操作") : wizard;
+  if (!modal) { w.className = setup ? "card onboarding" : "card confirmation"; node("h2", titles[p.action] || "完成当前操作", w); }
   const reply = (value, extra = {}) => send("reply", {step: p.token, value, ...extra});
   if (p.action === "guide_join_code") {
     form(w, "网络加入码", value => reply(value), {max: 200, placeholder: "输入管理员提供的加入码", button: "下一步"});
@@ -147,6 +232,9 @@ function renderWizard() {
     node("p", "双方同意后交换联系方式。", w);
     if (p.action !== "send_request") node("p", "双方同意后，联系人名片会发送到 Delta Chat 聊天中。", w, "muted");
     button(w, p.action === "send_request" ? "确认发送申请" : "确认交换联系方式", () => reply("1"), "primary");
+  } else if (p.action === "send_vcard_request") {
+    node("p", "确认向对方发送你的联系人名片？", w);
+    button(w, "确认发送", () => reply("1"), "primary");
   } else if (p.action === "guide_incoming_request") {
     node("p", "在“申请”页查看申请人、理由及申请类型，再选择同意、拒绝或屏蔽。", w);
     button(w, "查看申请", () => { tab = "申请"; render(); }, "primary");
@@ -157,7 +245,8 @@ function renderWizard() {
     const labels = {guide_join_code: "管理员提供的加入码", guide_nickname: "你希望大家怎么称呼你？", guide_edit_nickname: "新的昵称", guide_edit_bio: "个人介绍", guide_accept_contact: "愿意分享的 Delta Chat 地址", guide_admin_create_code: "按机器人提示设置加入码", guide_admin_rotate_code: "新加入码", guide_recover_identity: "网络编号和原成员编号"};
     form(w, labels[p.action] || "按机器人回执填写", value => reply(value), {max: 500});
   }
-  button(w, "取消", () => command("取消"), "quiet");
+  const cancel = button(w, "取消", () => command("取消"), modal ? "quiet modal-cancel" : "quiet");
+  if (modal) finishModal(w, cancel);
 }
 function renderFind(page) {
   node("h1", "好友", page);
@@ -280,7 +369,7 @@ function renderMe(page) {
 function adminOperation(operation, data = {}, question = "") {
   if (question) {
     adminConfirm = {operation, data, question};
-    document.activeElement?.blur(); render(); revealOperation("#admin-confirm"); return;
+    renderAdminConfirm(); return;
   }
   send("admin_action", {operation, data});
 }
@@ -339,12 +428,6 @@ function renderAdmin(page) {
     return;
   }
   if (state.messages.length) node("p", state.messages[state.messages.length - 1], page, "admin-result");
-  if (adminConfirm) {
-    const confirm = node("section", null, page, "card confirmation"); confirm.id = "admin-confirm";
-    node("h2", "确认操作", confirm); node("p", adminConfirm.question, confirm);
-    button(confirm, "确认", () => { if (!adminConfirm) return; const c = adminConfirm; adminConfirm = null; send("admin_action", {operation: c.operation, data: {...c.data, confirmed: "yes"}}); }, "danger");
-    button(confirm, "取消", () => { const code = adminConfirm?.data.member_code; adminConfirm = null; render(); revealOperation(code ? '[data-member-code="' + CSS.escape(code) + '"]' : "#admin-section"); }, "quiet");
-  }
   const networks = data.networks || [], current = networks.find(n => n.id === data.current);
   if (networks.length) {
     const chooser = node("label", "管理网络", page, "admin-network-label");
@@ -471,9 +554,13 @@ function render() {
   else if (tab === "申请") renderRequests(page);
   else if (tab === "消息") {
     renderNotifications(page);
-    if (state.pending?.action === "send_request") page.querySelector("h1")?.after(wizard);
+
   } else renderMe(page);
   renderNav();
+  if (modalKind !== "wizard") {
+    if (tab === "我的" && adminView && state.admin?.unlocked) renderAdminConfirm();
+    else if (modalKind === "admin") { adminConfirm = null; closeModal(); }
+  }
 }
 function renderNav() {
   $("nav").replaceChildren();
