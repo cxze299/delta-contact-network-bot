@@ -495,8 +495,7 @@ class BotService:
         self._reply(
             conn,
             user["id"],
-            "请输入原来的成员编号。\n"
-            "如果机器人提示编号重复，请输入“网络编号 成员编号”。\n"
+            "请在小程序输入网络加入码、原昵称和上次使用的 Delta Chat 账号。\n"
             "申请需由管理员核实并批准；输入 q 退出。",
             key,
         )
@@ -1785,8 +1784,8 @@ class BotService:
     def _block(self, conn, user, member_code, add, now, key) -> None:
         me, network = self._current_membership(conn, user)
         target = conn.execute(
-            "SELECT * FROM memberships WHERE network_id=? AND member_code=? AND status='active'",
-            (network["id"], member_code.upper()),
+            "SELECT * FROM memberships WHERE network_id=? AND member_code=? AND (?=0 OR status='active')",
+            (network["id"], member_code.upper(), int(add)),
         ).fetchone()
         if not target or target["id"] == me["id"]:
             raise UserError("目标成员不存在")

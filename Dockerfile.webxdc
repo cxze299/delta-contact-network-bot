@@ -1,2 +1,3 @@
-FROM delta-contact-network-bot:modal-confirm-20261028
-COPY src/contactbot/webxdc/app.js /venv/lib/python3.12/site-packages/contactbot/webxdc/app.js
+FROM delta-contact-network-bot:settings-fold-20261028
+COPY src/contactbot/service.py src/contactbot/webxdc_bridge.py /venv/lib/python3.12/site-packages/contactbot/
+COPY src/contactbot/webxdc/ /venv/lib/python3.12/site-packages/contactbot/webxdc/

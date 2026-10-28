@@ -6,6 +6,7 @@ let tab = "好友", filter = "待处理", preparing = false, ready = false, sele
 let autoNetwork = null, registrationAttempted = false;
 let deferredRemoteRender = false;
 let adminView = false, adminSection = "网络", adminConfirm = null, adminUnlocking = false;
+let recoveryDraft = {joinCode: "", nickname: "", oldAddress: ""};
 const expandedMembers = new Set();
 const expandedSettings = new Set();
 let notifications = [], readNotifications = {};
@@ -21,7 +22,18 @@ function node(tag, text, parent, cls = "") {
 function button(parent, text, fn, cls = "secondary") {
   const e = node("button", text, parent, cls); e.type = "button"; e.onclick = fn; return e;
 }
+function visibleText(text) {
+  const code = "M[A-HJ-NP-Z2-9]{6}";
+  return String(text || "")
+    .replace(new RegExp("[（(]" + code + "[）)]", "g"), "")
+    .replace(new RegExp("成员编号(?:[：:]\\s*|\\s+)" + code, "g"), "成员资料")
+    .replace(new RegExp("(^|\\n)" + code + "[｜|]", "g"), "$1")
+    .replace(new RegExp("对象\\s+" + code + "[｜|]?", "g"), "")
+    .replace(new RegExp("[｜|]" + code + "(?=[｜|\\s。\\n]|$)", "g"), "")
+    .replace(new RegExp("成员\\s+" + code, "g"), "成员");
+}
 function note(text) {
+  text = visibleText(text);
   $("status").textContent = text; $("status").hidden = !text;
   const modalStatus = document.getElementById("modal-status");
   if (modalStatus) { modalStatus.textContent = text; modalStatus.hidden = !text; }
@@ -210,6 +222,26 @@ function renderAdminConfirm() {
   finishModal(dialog, cancel);
 }
 
+function recoveryForm(parent) {
+  const f = node("form", null, parent);
+  const codeLabel = node("label", "网络加入码", f);
+  const code = node("input", null, codeLabel); code.type = "password"; code.autocomplete = "off"; code.maxLength = 200; code.required = true; code.value = recoveryDraft.joinCode;
+  const nameLabel = node("label", "原来的昵称", f);
+  const nickname = node("input", null, nameLabel); nickname.maxLength = 40; nickname.required = true; nickname.value = recoveryDraft.nickname;
+  code.addEventListener("input", () => { recoveryDraft.joinCode = code.value; });
+  nickname.addEventListener("input", () => { recoveryDraft.nickname = nickname.value; });
+  const addressLabel = node("label", "上次使用的账号或好友链接", f);
+  const oldAddress = node("input", null, addressLabel); oldAddress.type = "text"; oldAddress.autocomplete = "off"; oldAddress.autocapitalize = "none"; oldAddress.maxLength = 2000; oldAddress.required = true; oldAddress.value = recoveryDraft.oldAddress;
+  oldAddress.addEventListener("input", () => { recoveryDraft.oldAddress = oldAddress.value; });
+  const submit = node("button", "提交恢复申请", f, "primary"); submit.type = "submit";
+  f.onsubmit = event => {
+    event.preventDefault();
+    const address = accountFromInput(oldAddress.value);
+    if (!address) { note("请输入上次使用的 Delta Chat 账号或好友链接。"); oldAddress.focus(); return; }
+    document.activeElement?.blur();
+    send("recover_by_name", {join_code: code.value.trim(), nickname: nickname.value.trim(), old_address: address});
+  };
+}
 function renderWizard() {
   const wizard = $("wizard"); wizard.replaceChildren(); const p = state.pending;
   wizard.className = "";
@@ -218,7 +250,7 @@ function renderWizard() {
   if (!modal && modalKind === "wizard") closeModal();
   if (!p || ["guide_next", "guide_profile", "guide_choose_target", "guide_search", "guide_contact_choice", "guide_contact_manual", "guide_privacy_choice"].includes(p.action)) return;
   const setup = ["guide_join_code", "guide_nickname", "join"].includes(p.action);
-  const titles = {guide_join_code: "加入网络", guide_nickname: "怎么称呼你？", join: "完成设置", send_request: "确认好友申请", send_vcard_request: "确认发送名片", accept_request: "确认交换", leave: "退出网络", delete: "删除个人数据", rotate_code: "更换加入码", remove_member: "移除成员", ban_member: "封禁成员", disable_network: "停用网络"};
+  const titles = {guide_join_code: "加入网络", guide_nickname: "怎么称呼你？", join: "完成设置", guide_recover_identity: "恢复原账号", send_request: "确认好友申请", send_vcard_request: "确认发送名片", accept_request: "确认交换", leave: "退出网络", delete: "删除个人数据", rotate_code: "更换加入码", remove_member: "移除成员", ban_member: "封禁成员", disable_network: "停用网络"};
   const w = modal ? openModal("wizard", p.action + ":" + p.token, titles[p.action] || "确认操作") : wizard;
   if (!modal) { w.className = setup ? "card onboarding" : "card confirmation"; node("h2", titles[p.action] || "完成当前操作", w); }
   const reply = (value, extra = {}) => send("reply", {step: p.token, value, ...extra});
@@ -237,7 +269,7 @@ function renderWizard() {
     finish.disabled = !address;
   } else if (["send_request", "accept_request"].includes(p.action)) {
     node("p", "本次分享：" + (p.contact || "请先刷新核对联系方式"), w);
-    node("p", "分享给：" + (p.recipient ? p.recipient.nickname + "（" + p.recipient.member_code + "）" : "请先刷新核对对象"), w);
+    node("p", "分享给：" + (p.recipient ? p.recipient.nickname : "请先刷新核对对象"), w);
     if (p.action === "send_request" && p.reason) node("p", "联系理由：" + p.reason, w);
     node("p", "双方同意后交换联系方式。", w);
     if (p.action !== "send_request") node("p", "双方同意后，联系人名片会发送到 Delta Chat 聊天中。", w, "muted");
@@ -245,6 +277,8 @@ function renderWizard() {
   } else if (p.action === "send_vcard_request") {
     node("p", "确认向对方发送你的联系人名片？", w);
     button(w, "确认发送", () => reply("1"), "primary");
+  } else if (p.action === "guide_recover_identity") {
+    recoveryForm(w);
   } else if (p.action === "guide_incoming_request") {
     node("p", "在“申请”页查看申请人、理由及申请类型，再选择同意、拒绝或屏蔽。", w);
     button(w, "查看申请", () => { tab = "申请"; render(); }, "primary");
@@ -252,7 +286,7 @@ function renderWizard() {
     node("p", p.action === "delete" ? "这会清除个人资料并使相关未完成申请失效。已交付的信息无法收回。" : p.action === "leave" ? "退出后将从当前网络移除，尚未完成的申请会失效。" : "请确认要执行此操作。", w);
     button(w, p.action === "delete" ? "再次确认删除我的数据" : "确认执行", () => reply("1"), "danger");
   } else {
-    const labels = {guide_join_code: "管理员提供的加入码", guide_nickname: "你希望大家怎么称呼你？", guide_edit_nickname: "新的昵称", guide_edit_bio: "个人介绍", guide_accept_contact: "愿意分享的 Delta Chat 地址", guide_admin_create_code: "按机器人提示设置加入码", guide_admin_rotate_code: "新加入码", guide_recover_identity: "网络编号和原成员编号"};
+    const labels = {guide_join_code: "管理员提供的加入码", guide_nickname: "你希望大家怎么称呼你？", guide_edit_nickname: "新的昵称", guide_edit_bio: "个人介绍", guide_accept_contact: "愿意分享的 Delta Chat 地址", guide_admin_create_code: "按机器人提示设置加入码", guide_admin_rotate_code: "新加入码"};
     form(w, labels[p.action] || "按机器人回执填写", value => reply(value), {max: 500});
   }
   const cancel = button(w, "取消", () => command("取消"), modal ? "quiet modal-cancel" : "quiet");
@@ -273,15 +307,22 @@ function renderFind(page) {
   for (const person of directory.members) {
     const card = node("article", null, list, "person"); node("span", person.nickname.slice(0, 1), card, "avatar");
     const content = node("div", null, card);
-    node("h3", person.nickname, content); node("small", person.member_code, content, "muted"); if (person.bio) node("p", person.bio, content, "muted");
+    node("h3", person.nickname, content); if (person.bio) node("p", person.bio, content, "muted");
     button(content, selected === person.member_code ? "收起" : "添加", () => { selected = selected === person.member_code ? null : person.member_code; render(); }, "friend-add");
     if (selected === person.member_code) {
-      if (!state.profile?.share_contact) {
-        node("p", "申请前，请先确认你愿意分享的联系方式。", content);
-        button(content, "去设置联系方式", () => { tab = "我的"; render(); }, "primary");
+      const expanded = node("div", null, card, "friend-expanded");
+      const blocked = (state.blocked_members || []).some(m => m.member_code === person.member_code);
+      if (blocked) {
+        button(expanded, "解除屏蔽", () => command("解除屏蔽", person.member_code), "secondary");
+      } else if (!state.profile?.share_contact) {
+        node("p", "请先设置联系方式。", expanded);
+        button(expanded, "去设置联系方式", () => { tab = "我的"; render(); }, "primary");
       } else {
-        button(content, "交换名片", () => send("exchange_now", {value: person.member_code}), "primary");
+        button(expanded, "交换名片", () => send("exchange_now", {value: person.member_code}), "primary");
       }
+      const more = node("details", null, expanded, "friend-more"); node("summary", "更多操作", more);
+      if (!blocked) button(more, "屏蔽此人", () => command("屏蔽", person.member_code), "danger");
+      form(more, "举报原因", value => command("举报", person.member_code + " " + value), {max: 500, multiline: true, button: "提交举报"});
     }
   }
   const paging = node("div", null, page, "pagination");
@@ -303,7 +344,7 @@ function renderNotifications(page) {
     const body = node("div", null, card, "notification-body");
     node("strong", "好友助手", body);
     if (n.at) node("time", n.at.replace("T", " ").slice(0, 16), body, "muted");
-    node("p", n.body, body, "notification-text");
+    node("p", visibleText(n.body), body, "notification-text");
   }
 }
 function renderRequests(page) {
@@ -324,12 +365,17 @@ function renderRequests(page) {
         button(actions, "拒绝", () => command("拒绝申请", r.public_id)); button(actions, "屏蔽此人", () => command("屏蔽", r.sender_code), "quiet");
       } else button(actions, "撤销申请", () => command("撤销申请", r.public_id));
     }
+    const targetCode = r.direction === "incoming" ? r.sender_code : r.recipient_code;
+    if (targetCode) {
+      const more = node("details", null, card, "request-more"); node("summary", "举报此人", more);
+      form(more, "举报原因", value => command("举报", targetCode + " " + value), {max: 500, multiline: true, button: "提交举报"});
+    }
   }
 }
 function renderMe(page) {
   const p = state.profile; node("h1", p?.nickname || "我的资料", page);
   if (p) {
-    node("p", "成员编号 " + p.member_code, page, "muted"); const profile = settingsDisclosure(page, "昵称与个人介绍");
+    const profile = settingsDisclosure(page, "昵称与个人介绍");
     form(profile, "昵称", value => command("编辑昵称", value), {value: p.nickname, max: 40, button: "保存昵称"});
     form(profile, "简短介绍", value => command("编辑介绍", value), {value: p.bio, required: false, multiline: true, button: "保存介绍"});
     const contact = settingsDisclosure(page, "联系方式");
@@ -366,10 +412,13 @@ function renderMe(page) {
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
   button(networks, "加入新网络", () => send("join"), "primary");
   const safety = settingsDisclosure(page, "屏蔽、举报与账号");
-  form(safety, "屏蔽成员编号", value => command("屏蔽", value), {button: "屏蔽", max: 30});
-  form(safety, "解除屏蔽成员编号", value => command("解除屏蔽", value), {button: "解除屏蔽", max: 30});
-  button(safety, "查看屏蔽列表", () => command("屏蔽列表"));
-  form(safety, "举报：成员编号 + 空格 + 原因", value => command("举报", value), {button: "提交举报", max: 500, multiline: true});
+  const blocked = state.blocked_members || [];
+  if (!blocked.length) node("p", "暂无屏蔽的成员。", safety, "muted");
+  for (const person of blocked) {
+    const row = node("div", null, safety, "setting"); node("span", person.nickname, row);
+    button(row, "解除屏蔽", () => command("解除屏蔽", person.member_code));
+  }
+  node("p", "可在好友卡片的更多操作中屏蔽或举报。", safety, "muted");
   button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "退出当前网络", () => command("退出网络"), "danger"); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
   const info = settingsDisclosure(page, "隐私说明与使用帮助"); privacy(info);
   node("p", "仅公开资料的成员会出现在目录中。申请 7 天后过期；双方确认后交换联系方式，请自行核验身份。", info, "muted");
@@ -430,14 +479,14 @@ function renderAdmin(page) {
     const card = node("section", null, page, "card admin-unlock");
     node("h2", "验证管理员密钥", card);
     node("p", "验证后为当前账号保留管理权限。", card, "muted");
-    if (state.receipt && !state.receipt.ok && state.messages.length) node("p", state.messages[state.messages.length - 1], card, "admin-error");
+    if (state.receipt && !state.receipt.ok && state.messages.length) node("p", visibleText(state.messages[state.messages.length - 1]), card, "admin-error");
     if (!data.challenge) {
       node("p", "请获取验证信息后输入密钥。", card, "muted");
       button(card, "获取验证信息", () => send("admin_open"), "primary");
     } else form(card, "管理员密钥", unlockAdmin, {type: "password", autocomplete: "off", clearOnSubmit: true, max: 128, button: "解锁管理"});
     return;
   }
-  if (state.messages.length) node("p", state.messages[state.messages.length - 1], page, "admin-result");
+  if (state.messages.length) node("p", visibleText(state.messages[state.messages.length - 1]), page, "admin-result");
   const networks = data.networks || [], current = networks.find(n => n.id === data.current);
   if (networks.length) {
     const chooser = node("label", "管理网络", page, "admin-network-label");
@@ -453,7 +502,7 @@ function renderAdmin(page) {
   if (!current && adminSection !== "系统") { node("div", "暂无可管理的网络。", page, "empty muted"); return; }
   if (adminSection === "网络") {
     const card = node("section", null, page, "card");
-    node("h2", current.name, card); node("p", current.public_id + " · " + current.member_count + " 位成员", card, "muted");
+    node("h2", current.name, card); node("p", current.member_count + " 位成员", card, "muted");
     const row = node("div", null, card, "setting"); node("span", "允许新成员加入", row);
     const toggle = button(row, "", () => adminOperation(current.join_enabled ? "join_off" : "join_on"), "ios-switch");
     toggle.setAttribute("role", "switch"); toggle.setAttribute("aria-label", "允许新成员加入"); toggle.setAttribute("aria-checked", String(Boolean(current.join_enabled))); node("span", null, toggle, "switch-knob");
@@ -466,7 +515,7 @@ function renderAdmin(page) {
     const members = data.members || [];
     if (!members.length) node("div", "没有成员。", page, "empty muted");
     for (const m of members) {
-      const detail = disclosure(page, m.nickname + " · " + m.member_code + " · " + (m.is_self ? "本人" : m.discoverable ? "首页可见" : "资料隐藏"));
+      const detail = disclosure(page, m.nickname + " · " + (m.is_self ? "本人" : m.discoverable ? "首页可见" : "资料隐藏"));
       detail.dataset.memberCode = m.member_code;
       detail.open = expandedMembers.has(m.member_code);
       detail.addEventListener("toggle", () => { if (detail.isConnected) { if (detail.open) expandedMembers.add(m.member_code); else expandedMembers.delete(m.member_code); } });
@@ -493,7 +542,7 @@ function renderAdmin(page) {
     if (data.bans?.length) {
       const banned = disclosure(page, "封禁名单");
       for (const m of data.bans) {
-        const row = node("div", null, banned, "setting"); node("span", m.nickname + " · " + m.member_code, row);
+        const row = node("div", null, banned, "setting"); node("span", m.nickname, row);
         button(row, "解除封禁", () => adminOperation("unban", {member_code: m.member_code}, "解除 " + m.nickname + " 的封禁？"));
       }
     }
@@ -518,13 +567,13 @@ function renderAdmin(page) {
     node("h2", "账号恢复", page);
     if (!(data.recoveries || []).length) node("p", "暂无待审核申请。", page, "muted");
     for (const r of data.recoveries || []) {
-      const card = node("section", null, page, "card"); node("h3", r.nickname + " · " + r.member_code, card); node("p", r.public_id, card, "muted");
+      const card = node("section", null, page, "card"); node("h3", r.nickname, card); node("p", r.public_id, card, "muted");
       adminButtonGroup(card, [["批准恢复", () => adminOperation("approve_recovery", {recovery_id: r.public_id}, "确认已核实 " + r.nickname + " 的身份？"), "primary"], ["拒绝", () => adminOperation("reject_recovery", {recovery_id: r.public_id}, "确定拒绝该恢复申请？"), "danger"]]);
     }
   } else if (adminSection === "记录") {
     const names = {"web:view_join_code":"查看加入码", "create_network":"创建网络", "rename_network":"修改网络名称", "set_role":"更改管理员", "remove_member":"移除成员", "ban_member":"封禁成员", "unban_member":"解除封禁", "rotate_join_code":"更换加入码", "enable_network":"恢复网络", "disable_network":"停用网络", "approve_account_recovery":"批准账号恢复", "reject_account_recovery":"拒绝账号恢复", "merge_duplicate_identity":"自动合并账号", "close_uncertain_delivery":"结束待核查交付"};
     if (!(data.audit || []).length) node("div", "暂无管理记录。", page, "empty muted");
-    for (const a of data.audit || []) { const card = node("div", null, page, "card admin-audit"); node("strong", names[a.action] || "管理操作", card); if (a.target_ref) node("p", a.target_ref, card); node("small", (a.created_at || "").replace("T", " ").slice(0, 16), card, "muted"); }
+    for (const a of data.audit || []) { const card = node("div", null, page, "card admin-audit"); node("strong", names[a.action] || "管理操作", card); if (a.target_ref && !/^M[A-HJ-NP-Z2-9]{6}$/.test(a.target_ref)) node("p", a.target_ref, card); node("small", (a.created_at || "").replace("T", " ").slice(0, 16), card, "muted"); }
   } else if (adminSection === "系统") {
     const card = node("section", null, page, "card"); node("h2", "创建网络", card);
     form(card, "网络名称", value => adminOperation("create", {name: value}), {max: 60, button: "创建网络"});
@@ -604,44 +653,48 @@ $("refresh").onclick = () => waiting ? resend() : send("refresh");
 $("retry").onclick = resend;
 let viewportFrame;
 let keyboardScroll = null;
-let restingHeight = window.innerHeight;
+let restingHeight = document.documentElement.clientHeight || window.innerHeight;
 let viewportWidth = window.innerWidth;
 const editableFocused = () => document.activeElement?.matches("input,textarea,select,[contenteditable=true]");
-function keepFocusedControlVisible() {
+function resetPageOffset() {
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
+function keepFocusedControlVisible(viewport) {
   const active = document.activeElement, main = document.querySelector("main");
   if (!active || !main.contains(active) || !active.matches("input,textarea,select,[contenteditable=true]")) return;
-  const box = main.getBoundingClientRect(), form = active.closest("form");
-  const target = form && form.getBoundingClientRect().height < main.clientHeight - 24 ? form : active;
+  const box = main.getBoundingClientRect();
+  const top = Math.max(box.top, viewport?.offsetTop || 0);
+  const bottom = Math.min(box.bottom, (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight));
+  const form = active.closest("form"), visibleHeight = Math.max(0, bottom - top);
+  const target = form && form.getBoundingClientRect().height < visibleHeight - 24 ? form : active;
   const rect = target.getBoundingClientRect();
-  if (rect.bottom > box.bottom - 12) main.scrollTop += rect.bottom - box.bottom + 12;
-  else if (rect.top < box.top + 12) main.scrollTop -= box.top + 12 - rect.top;
+  if (rect.bottom > bottom - 12) main.scrollTop += rect.bottom - bottom + 12;
+  else if (rect.top < top + 12) main.scrollTop -= top + 12 - rect.top;
 }
 function fitViewport() {
   cancelAnimationFrame(viewportFrame);
   viewportFrame = requestAnimationFrame(() => {
-    const viewport = window.visualViewport;
-    // Do not reflow the app in response to accessibility pinch zoom.
-    if (viewport && Math.abs(viewport.scale - 1) > .01) return;
-    const main = document.querySelector("main");
+    const viewport = window.visualViewport, main = document.querySelector("main");
     if (Math.abs(window.innerWidth - viewportWidth) > 80) {
-      restingHeight = window.innerHeight; viewportWidth = window.innerWidth;
+      viewportWidth = window.innerWidth;
+      restingHeight = document.documentElement.clientHeight || window.innerHeight;
+      keyboardScroll = null;
     }
+    if (viewport && Math.abs(viewport.scale - 1) > .01) return;
     const height = viewport?.height || window.innerHeight;
-    const keyboardOpen = keyboardScroll !== null ? height < restingHeight - 20 : editableFocused() && height < restingHeight - 100;
-    if (!keyboardOpen) {
-      if (!editableFocused() && keyboardScroll === null) restingHeight = Math.max(height, window.innerHeight);
-      document.documentElement.style.setProperty("--app-height", height + "px");
-      document.documentElement.style.setProperty("--app-top", "0px");
-      window.scrollTo(0, 0);
-      if (keyboardScroll !== null) {
-        main.scrollTop = keyboardScroll; keyboardScroll = null;
-        if (editableFocused()) document.activeElement.blur();
-      }
-    } else {
+    const focused = editableFocused();
+    const keyboardOpen = focused && height < restingHeight - 100;
+    if (keyboardOpen) {
       if (keyboardScroll === null) keyboardScroll = main.scrollTop;
-      document.documentElement.style.setProperty("--app-height", height + "px");
-      document.documentElement.style.setProperty("--app-top", Math.max(0, viewport?.offsetTop || 0) + "px");
-      requestAnimationFrame(keepFocusedControlVisible);
+      requestAnimationFrame(() => keepFocusedControlVisible(viewport));
+    } else if (!focused || height >= restingHeight - 20) {
+      if (keyboardScroll !== null) { main.scrollTop = keyboardScroll; keyboardScroll = null; }
+      if (!focused) {
+        resetPageOffset();
+        restingHeight = document.documentElement.clientHeight || window.innerHeight;
+      }
     }
   });
 }
@@ -649,7 +702,12 @@ window.visualViewport?.addEventListener("resize", fitViewport);
 window.visualViewport?.addEventListener("scroll", fitViewport);
 window.addEventListener("resize", fitViewport);
 document.addEventListener("focusin", fitViewport);
-document.addEventListener("focusout", () => { fitViewport(); [100, 300, 600, 1000].forEach(ms => setTimeout(fitViewport, ms)); });
+document.addEventListener("focusout", () => {
+  fitViewport();
+  [100, 300, 600, 1000].forEach(ms => setTimeout(() => {
+    if (!editableFocused()) { resetPageOffset(); fitViewport(); }
+  }, ms));
+});
 fitViewport();
 render(); if (waiting) watchPending();
 if (window.webxdc?.setUpdateListener && bound) {
@@ -673,6 +731,7 @@ if (window.webxdc?.setUpdateListener && bound) {
     const adminReceipt = receivedReceipt && ["admin_open", "admin_unlock", "admin_action", "admin_select", "admin_lock"].includes(waiting.kind) ? waiting.kind : null;
     if (receivedReceipt) {
       const showConfirmation = waiting.openMessages && p.receipt.ok && p.pending?.action === "send_request";
+      const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
       waiting = null; rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
       if (showConfirmation) {
         tab = "消息"; selected = null;
@@ -680,7 +739,7 @@ if (window.webxdc?.setUpdateListener && bound) {
         try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {}
         scrollTop();
       }
-      note(p.receipt.ok ? "" : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
+      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : "") : (p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
     } else if (!waiting) note("");
     if (before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt);
     if (adminReceipt && adminView) {
@@ -688,6 +747,7 @@ if (window.webxdc?.setUpdateListener && bound) {
       else if (!state.admin?.unlocked) revealOperation(".admin-unlock", false);
       else revealOperation(adminReceipt === "admin_action" ? ".admin-result" : "#admin-section", false);
     }
+    if (previousStep === "guide_recover_identity" && state.pending?.action !== previousStep) recoveryDraft = {joinCode: "", nickname: "", oldAddress: ""};
     if (receivedReceipt && previousStep !== state.pending?.action && ["guide_join_code", "guide_nickname", "join"].includes(previousStep)) scrollTop();
     if (!waiting && !p.notifications_enabled && !registrationAttempted) {
       registrationAttempted = true; setTimeout(() => send("refresh"), 0);

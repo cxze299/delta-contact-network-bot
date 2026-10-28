@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -142,6 +143,9 @@ class WebxdcBridge:
             onboarding_action = False
             action = request.get("action")
             previous, allowed = self.admin.prepare_attempt(conn, user, token, now) if action == "admin_unlock" else (None, False)
+            # Record failed attempts outside the action savepoint so rollback cannot
+            # bypass the recovery join-code rate limit.
+            recovery_allowed = self.service._rate_allowed(conn, user["actor_key"], "recovery_lookup", 10, 60, now) if action == "recover_by_name" else True
             conn.execute("SAVEPOINT xdc_action")
             try:
                 value = request.get("value", "")
@@ -164,6 +168,21 @@ class WebxdcBridge:
                             conn.execute("UPDATE outbox SET body='加入码无效或已停用，请检查后重试。' WHERE dedupe_key=?", (f"{key}:{user['id']}",))
                     else:
                         self.service._reply(conn, user["id"], "请输入管理员提供的加入码。", key)
+                elif action == "recover_by_name":
+                    if not recovery_allowed:
+                        raise UserError("恢复尝试过多，请一小时后再试")
+                    join_code, nickname, old_address = request.get("join_code"), request.get("nickname"), request.get("old_address")
+                    if not isinstance(join_code, str) or not isinstance(nickname, str) or not isinstance(old_address, str) or not 1 <= len(join_code.strip()) <= 200 or not 1 <= len(nickname.strip()) <= 40 or not self.service._valid_contact(old_address.strip()):
+                        raise UserError("请输入网络加入码、原昵称和原 Delta Chat 账号")
+                    network = self.service._find_network_by_code(conn, join_code.strip())
+                    old_actor = hmac.new(self.service.secret, old_address.strip().casefold().encode("utf-8"), hashlib.sha256).hexdigest()
+                    rows = conn.execute("""SELECT m.member_code FROM memberships m JOIN users u ON u.id=m.user_id
+                        WHERE m.network_id=? AND m.nickname=? AND m.status='active' AND (u.actor_key=? OR EXISTS
+                        (SELECT 1 FROM users alias WHERE alias.merged_into=u.id AND alias.actor_key=?)) LIMIT 2""",
+                        (network["id"], nickname.strip(), old_actor, old_actor)).fetchall() if network and network["status"] == "active" else []
+                    if len(rows) != 1:
+                        raise UserError("未找到唯一匹配的成员，请检查信息或联系管理员")
+                    self.service._submit_account_recovery(conn, user, network["public_id"] + " " + rows[0]["member_code"], now, key)
                 elif action == "use_current_account":
                     onboarding_action = True
                     if not self.service._valid_contact(incoming.contact_address):
@@ -329,15 +348,19 @@ class WebxdcBridge:
                 (user["id"], user["current_network_id"], user["id"], user["id"]))] if profile else []
             for request in requests:
                 request["delivery_uncertain"] = bool(conn.execute("SELECT 1 FROM outbox WHERE status='sending' AND delivery_closed_at IS NULL AND (dedupe_key LIKE ? OR dedupe_key LIKE ?)", (f"exchange:{request['public_id']}:%", f"reissue:{request['public_id']}:%")).fetchone())
+            blocked_members = [dict(row) for row in conn.execute("""SELECT m.member_code,m.nickname,m.status FROM blocks b
+                JOIN memberships me ON me.id=b.blocker_membership_id
+                JOIN memberships m ON m.id=b.blocked_membership_id AND m.network_id=b.network_id
+                WHERE b.network_id=? AND me.user_id=? AND me.status='active' ORDER BY m.nickname,m.id LIMIT 150""", (user["current_network_id"], user["id"]))] if profile else []
             choices = []
             if pending and pending["action"] == "guide_choose_target":
                 for index, member_id in enumerate(json.loads(pending["payload"])["ids"], 1):
                     member = conn.execute("SELECT nickname,member_code,bio FROM memberships WHERE id=? AND network_id=? AND status='active' AND (discoverable=1 OR user_id=?)", (member_id, user["current_network_id"], user["id"])).fetchone()
                     if member:
-                        choices.append({**dict(member), "label": member["nickname"] + " · " + member["member_code"], "value": str(index)})
+                        choices.append({**dict(member), "label": member["nickname"], "value": str(index)})
             for network in networks:
                 network["current"] = bool(conn.execute("SELECT 1 FROM networks WHERE public_id=? AND id=?", (network["public_id"], user["current_network_id"])).fetchone())
-            payload = {"profile": profile, "communication_address": incoming.contact_address if profile or (pending and pending["action"] == "join") else "", "admin_role": admin_role, "requests": requests, "current_network": user["current_network_id"], "choices": choices if profile else [], "type": "contact-state", "networks": networks, "pending": {"action": pending["action"], "token": pending["token"]} if pending else None, "messages": messages}
+            payload = {"profile": profile, "communication_address": incoming.contact_address if profile or (pending and pending["action"] == "join") else "", "admin_role": admin_role, "requests": requests, "blocked_members": blocked_members, "current_network": user["current_network_id"], "choices": choices if profile else [], "type": "contact-state", "networks": networks, "pending": {"action": pending["action"], "token": pending["token"]} if pending else None, "messages": messages}
             if pending:
                 details = json.loads(pending["payload"])
                 if pending["action"] in {"guide_nickname", "join"}:
