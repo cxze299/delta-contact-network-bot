@@ -76,6 +76,7 @@ class WebxdcBridge:
                 );
             """)
             conn.execute("CREATE TABLE IF NOT EXISTS xdc_request_results (token TEXT NOT NULL, request_id TEXT NOT NULL, ok INTEGER NOT NULL, PRIMARY KEY(token,request_id), FOREIGN KEY(token,request_id) REFERENCES xdc_requests(token,request_id) ON DELETE CASCADE)")
+            conn.execute("CREATE TABLE IF NOT EXISTS xdc_join_feedback (token TEXT NOT NULL, request_id TEXT NOT NULL, error TEXT NOT NULL, PRIMARY KEY(token,request_id), FOREIGN KEY(token,request_id) REFERENCES xdc_requests(token,request_id) ON DELETE CASCADE)")
             conn.execute("CREATE TABLE IF NOT EXISTS xdc_cursors (account_id INTEGER NOT NULL, message_id INTEGER NOT NULL, serial INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account_id,message_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS xdc_receipts (token TEXT PRIMARY KEY, request_id TEXT NOT NULL, ok INTEGER NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS xdc_directory (token TEXT PRIMARY KEY, network_id INTEGER NOT NULL, page INTEGER NOT NULL)")
@@ -154,12 +155,13 @@ class WebxdcBridge:
             # Record failed attempts outside the action savepoint so rollback cannot
             # bypass the recovery join-code rate limit.
             recovery_allowed = self.service._rate_allowed(conn, user["actor_key"], "recovery_lookup", 10, 60, now) if action == "recover_by_name" else True
+            join_allowed = self.service._rate_allowed(conn, user["actor_key"], "join_attempt", 10, 60, now) if action == "join_network" and request.get("admin_network") is None else True
             conn.execute("SAVEPOINT xdc_action")
             try:
                 value = request.get("value", "")
                 if not isinstance(value, str) or len(value) > 2000:
                     raise UserError("输入内容必须为文本")
-                if action not in {"refresh", "cancel_join"} and request.get("network") != user["current_network_id"]:
+                if action not in {"refresh", "cancel_join", "join_network"} and request.get("network") != user["current_network_id"]:
                     raise UserError("当前网络已变化，请刷新后操作")
                 if action == "start":
                     existing = conn.execute("SELECT 1 FROM pending_actions WHERE user_id=? AND expires_at>?", (user["id"], now)).fetchone()
@@ -173,6 +175,43 @@ class WebxdcBridge:
                     if not pending or pending["action"] not in {"guide_join_code", "guide_nickname", "join"}:
                         raise UserError("该加入步骤已结束，请刷新当前状态")
                     conn.execute("DELETE FROM pending_actions WHERE user_id=? AND token=?", (user["id"], step))
+                elif action == "join_network":
+                    # One user submission, one transaction. No shared wizard
+                    # token or intermediate switch of the user's network.
+                    onboarding_action = True
+                    if not join_allowed:
+                        raise UserError("加入尝试过多，请一小时后再试")
+                    if request.get("admin_network") is not None:
+                        self.admin.require(conn, user, token, now)
+                        network_id = request["admin_network"]
+                        if isinstance(network_id, bool) or not isinstance(network_id, int):
+                            raise UserError("请选择要加入的网络")
+                        network = conn.execute("SELECT * FROM networks WHERE id=?", (network_id,)).fetchone()
+                    else:
+                        network = self.service._find_network_by_code(conn, value.strip())
+                    if not network:
+                        raise UserError("加入码不正确。请向管理员获取完整加入码，网络名称不能用于加入。")
+                    if network["status"] != "active" or not network["join_enabled"]:
+                        raise UserError("该网络目前已停止加入，请联系管理员")
+                    if conn.execute("SELECT 1 FROM bans WHERE network_id=? AND actor_key=?", (network["id"], user["actor_key"])).fetchone():
+                        raise UserError("此账号不能加入该网络")
+                    nickname = request.get("nickname")
+                    if not isinstance(nickname, str):
+                        raise UserError("请填写昵称")
+                    self.service._validate_nickname(nickname)
+                    if request.get("consent") is not True or request.get("use_current_account") is not True:
+                        raise UserError("请确认使用当前账号及隐私说明")
+                    if not all(isinstance(request.get(k), bool) for k in ("discoverable", "accepts_requests")):
+                        raise UserError("请选择资料公开和接收申请设置")
+                    if not self.service._valid_contact(incoming.contact_address):
+                        raise UserError("暂时无法读取当前账号，请刷新后再操作")
+                    existing = conn.execute("SELECT 1 FROM memberships WHERE user_id=? AND network_id=? AND status='active'", (user["id"], network["id"])).fetchone()
+                    if existing:
+                        self.service._switch_network(conn, user, network["public_id"], now, key)
+                    else:
+                        self.service._confirm_join(conn, user, {"network_id": network["id"], "join_code_hash": network["join_code_hash"], "nickname": nickname.strip()}, now, key)
+                        conn.execute("UPDATE memberships SET discoverable=?,accepts_requests=?,share_contact=?,share_version=share_version+1,updated_at=? WHERE user_id=? AND network_id=?", (int(request["discoverable"]), int(request["accepts_requests"]), incoming.contact_address.strip(), now, user["id"], network["id"]))
+                        conn.execute("DELETE FROM pending_actions WHERE user_id=? AND action IN ('guide_join_code','guide_nickname','join')", (user["id"],))
                 elif action == "join_managed":
                     self.admin.require(conn, user, token, now)
                     network_id = request.get("admin_network")
@@ -353,6 +392,9 @@ class WebxdcBridge:
                 conn.execute("ROLLBACK TO xdc_action")
                 conn.execute("RELEASE xdc_action")
                 self.service._reply(conn, user["id"], str(exc), key)
+                if action == "join_network":
+                    # Only fixed validation messages; never store the join code.
+                    conn.execute("INSERT OR REPLACE INTO xdc_join_feedback VALUES(?,?,?)", (token, request_id, str(exc)))
             conn.execute("INSERT OR REPLACE INTO xdc_request_results(token,request_id,ok) VALUES(?,?,?)", (token, request_id, int(success)))
             conn.execute("INSERT INTO xdc_receipts VALUES(?,?,?) ON CONFLICT(token) DO UPDATE SET request_id=excluded.request_id,ok=excluded.ok", (token, request_id, int(success)))
             if request.get("notification_version") == 1:
@@ -418,7 +460,7 @@ class WebxdcBridge:
         for instance in instances:
             with self.service.db.transaction() as conn:
                 receipt = conn.execute("SELECT request_id,ok FROM xdc_receipts WHERE token=?", (instance["token"],)).fetchone()
-                recent_receipts = conn.execute("SELECT q.request_id,r.ok FROM xdc_requests q JOIN xdc_request_results r ON r.token=q.token AND r.request_id=q.request_id WHERE q.token=? ORDER BY q.rowid DESC LIMIT 100", (instance["token"],)).fetchall()
+                recent_receipts = conn.execute("SELECT q.request_id,r.ok,f.error FROM xdc_requests q JOIN xdc_request_results r ON r.token=q.token AND r.request_id=q.request_id LEFT JOIN xdc_join_feedback f ON f.token=q.token AND f.request_id=q.request_id WHERE q.token=? ORDER BY q.rowid DESC LIMIT 100", (instance["token"],)).fetchall()
                 directory = conn.execute("SELECT page FROM xdc_directory WHERE token=? AND network_id=?", (instance["token"], user["current_network_id"])).fetchone()
                 payload["directory"] = None
                 if profile and conn.execute("SELECT 1 FROM memberships m JOIN networks n ON n.id=m.network_id JOIN users u ON u.id=m.user_id WHERE m.user_id=? AND m.network_id=? AND m.status='active' AND n.status='active' AND u.current_network_id=m.network_id", (user["id"], user["current_network_id"])).fetchone():
@@ -431,7 +473,7 @@ class WebxdcBridge:
                 payload["notifications_enabled"] = bool(instance["notifications_enabled"])
                 payload["admin"] = self.admin.snapshot(conn, user, instance["token"], _now())
             payload["receipt"] = dict(receipt) if receipt else None
-            payload["recent_receipts"] = [dict(row) for row in recent_receipts]
+            payload["recent_receipts"] = [{k: v for k, v in dict(row).items() if v is not None} for row in recent_receipts]
             # Include acknowledgements even when the business snapshot is unchanged.
             digest = hashlib.sha256(json.dumps({k: v for k, v in payload.items() if k != "at"}, sort_keys=True).encode()).hexdigest()
             identity = (incoming.account_id, instance["message_id"])

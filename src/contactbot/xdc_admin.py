@@ -154,7 +154,8 @@ class XdcAdmin:
             return {"unlocked": False, "challenge": {"nonce": challenge["nonce"], "salt": self.verifier["salt"], "iterations": self.verifier["iterations"]} if challenge and self.verifier else None}
         ctx = conn.execute("SELECT network_id,page FROM xdc_admin_context WHERE token=?", (token,)).fetchone()
         if not ctx:
-            return {"unlocked": True, "networks": [], "current": None}
+            self.open(conn, user, token, now)
+            ctx = conn.execute("SELECT network_id,page FROM xdc_admin_context WHERE token=?", (token,)).fetchone()
         if is_system:
             networks = conn.execute("SELECT n.id,n.public_id,n.name,n.status,n.join_enabled,(SELECT count(*) FROM memberships m WHERE m.network_id=n.id AND m.status='active') member_count FROM networks n ORDER BY n.name").fetchall()
         else:

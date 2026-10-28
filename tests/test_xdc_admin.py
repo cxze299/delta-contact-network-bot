@@ -339,3 +339,18 @@ def test_new_admin_without_membership_can_join_managed_network(admin_fixture):
     fresh.reply('1', consent=True, use_current_account=True, discoverable=True, accepts_requests=True)
     assert fresh.snapshot()['current_network'] == second_id
     assert len(fresh.snapshot()['networks']) == 1
+
+
+def test_fresh_admin_instance_has_networks_and_can_join_in_one_submission(admin_fixture):
+    admin, _, secret, first, second = admin_fixture
+    admin.call('admin_open'); admin.call('admin_unlock', proof=proof(admin, secret))
+    fresh = Client(admin.bridge, 'system', 10)
+    snapshot = fresh.snapshot()
+    assert snapshot['admin']['system'] is True
+    assert len(snapshot['admin']['networks']) == 2
+    target = next(n['id'] for n in snapshot['admin']['networks'] if n['public_id'] == second)
+    fresh.call('join_network', admin_network=target, nickname='管理者', consent=True,
+               use_current_account=True, discoverable=True, accepts_requests=True)
+    assert fresh.snapshot()['receipt']['ok'] == 1
+    assert fresh.snapshot()['pending'] is None
+    assert len(fresh.snapshot()['networks']) == 2
