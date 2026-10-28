@@ -120,3 +120,18 @@ def test_sync_excludes_other_user(bridge):
     b.sync(incoming)
     encoded = b.rpc.send_webxdc_status_update.call_args.args[2]
     assert "PRIVATE_BOB_CONTACT" not in encoded
+
+
+def test_old_request_table_migrates_preserving_existing_records(tmp_path):
+    db = Database(tmp_path / "legacy.db")
+    db.initialize()
+    with db.transaction() as conn:
+        conn.execute("CREATE TABLE xdc_requests (token TEXT NOT NULL, request_id TEXT NOT NULL, PRIMARY KEY(token, request_id))")
+        conn.execute("INSERT INTO xdc_requests VALUES ('legacy-token', 'legacy-request')")
+    WebxdcBridge(Mock(), BotService(db, b"test-secret-that-is-at-least-32-bytes"))
+    row = db.connection.execute("SELECT token, request_id FROM xdc_requests").fetchone()
+    assert tuple(row) == ("legacy-token", "legacy-request")
+    assert db.connection.execute("SELECT count(*) FROM xdc_request_results").fetchone()[0] == 0
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO xdc_requests VALUES (?,?)", ("old-version", "still-compatible"))
+    db.close()

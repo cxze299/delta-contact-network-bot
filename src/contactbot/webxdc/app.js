@@ -12,7 +12,7 @@ const expandedMembers = new Set();
 const expandedSettings = new Set();
 let notifications = [], readNotifications = {};
 try { readNotifications = JSON.parse(localStorage.getItem("friend-notifications-read") || "{}"); } catch { /* Storage is optional. */ }
-let waiting = null, waitTimer;
+let waiting = null, waitTimer, autoRetries = 0;
 try { waiting = JSON.parse(localStorage.getItem("friend-pending-v2") || "null"); } catch { /* Storage is optional. */ }
 const bound = Boolean(window.CONTACT_CONFIG?.token);
 function node(tag, text, parent, cls = "") {
@@ -60,7 +60,8 @@ function watchPending() {
     note("仍在等待机器人响应。请检查网络；重试会使用同一请求，不会重复执行。");
     $("retry").hidden = false;
     if ($("modal-retry")) $("modal-retry").hidden = false;
-  }, 30000);
+    if (autoRetries < 1) { autoRetries++; resend(); }
+  }, 8000);
 }
 function toBase64(bytes) { return btoa(String.fromCharCode(...bytes)); }
 async function seal(request) {
@@ -93,6 +94,7 @@ async function send(action, extra = {}) {
   note("正在提交…");
   try {
     const payload = await seal({token: window.CONTACT_CONFIG.token, id, action, network: state.current_network, notification_version: 1, ...extra});
+    autoRetries = 0;
     waiting = {id, payload, kind: action, operation: extra.operation || "", command: extra.command || "", openMessages: action === "command" && extra.command === "申请"}; rememberPending();
     await resend();
   } catch { note("提交失败，请稍后重试。"); }
@@ -773,7 +775,7 @@ if (window.webxdc?.setUpdateListener && bound) {
       const completedJoin = p.receipt.ok && ((waiting.kind === "reply" && previousStep === "join") || ((waiting.kind === "reply" || waiting.kind === "join") && changed && p.profile && (previousStep === "guide_join_code" || waiting.kind === "join")));
       if (cancelledJoin) { adminView = false; tab = state.profile ? "我的" : "好友"; scrollTop(); }
       if (completedJoin) { tab = "好友"; adminView = false; scrollTop(); }
-      waiting = null; rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
+      waiting = null; autoRetries = 0; rememberPending(); clearTimeout(waitTimer); $("retry").hidden = true;
       if (showConfirmation) {
         tab = "消息"; selected = null;
         notifications.forEach(n => { readNotifications[n.id] = true; });

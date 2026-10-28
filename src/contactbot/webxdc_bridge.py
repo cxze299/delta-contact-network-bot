@@ -75,6 +75,7 @@ class WebxdcBridge:
                     PRIMARY KEY(token,request_id)
                 );
             """)
+            conn.execute("CREATE TABLE IF NOT EXISTS xdc_request_results (token TEXT NOT NULL, request_id TEXT NOT NULL, ok INTEGER NOT NULL, PRIMARY KEY(token,request_id), FOREIGN KEY(token,request_id) REFERENCES xdc_requests(token,request_id) ON DELETE CASCADE)")
             conn.execute("CREATE TABLE IF NOT EXISTS xdc_cursors (account_id INTEGER NOT NULL, message_id INTEGER NOT NULL, serial INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account_id,message_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS xdc_receipts (token TEXT PRIMARY KEY, request_id TEXT NOT NULL, ok INTEGER NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS xdc_directory (token TEXT PRIMARY KEY, network_id INTEGER NOT NULL, page INTEGER NOT NULL)")
@@ -132,12 +133,19 @@ class WebxdcBridge:
             ).fetchone()
             if not instance:
                 return True
-            if conn.execute("SELECT 1 FROM xdc_requests WHERE token=? AND request_id=?", (token, request_id)).fetchone():
+            duplicate = conn.execute("SELECT r.ok FROM xdc_requests q LEFT JOIN xdc_request_results r ON r.token=q.token AND r.request_id=q.request_id WHERE q.token=? AND q.request_id=?", (token, request_id)).fetchone()
+            if duplicate:
+                prior = conn.execute("SELECT request_id,ok FROM xdc_receipts WHERE token=?", (token,)).fetchone()
+                # Older requests did not store an outcome. Never execute them again
+                # or claim success if their original outcome cannot be recovered.
+                outcome = duplicate["ok"] if duplicate["ok"] is not None else (prior["ok"] if prior and prior["request_id"] == request_id else 0)
+                conn.execute("INSERT INTO xdc_receipts VALUES(?,?,?) ON CONFLICT(token) DO UPDATE SET request_id=excluded.request_id,ok=excluded.ok", (token, request_id, outcome))
+                self._last_sync.pop((incoming.account_id, instance["message_id"]), None)
                 return True
             now = _now()
             user = self.service._ensure_user(conn, incoming, now)
             self.service._expire(conn, now)
-            conn.execute("INSERT INTO xdc_requests VALUES(?,?)", (token, request_id))
+            conn.execute("INSERT INTO xdc_requests(token,request_id) VALUES(?,?)", (token, request_id))
             key = "xdc:" + request_id
             success = True
             onboarding_action = False
@@ -316,6 +324,7 @@ class WebxdcBridge:
                 conn.execute("ROLLBACK TO xdc_action")
                 conn.execute("RELEASE xdc_action")
                 self.service._reply(conn, user["id"], str(exc), key)
+            conn.execute("INSERT OR REPLACE INTO xdc_request_results(token,request_id,ok) VALUES(?,?,?)", (token, request_id, int(success)))
             conn.execute("INSERT INTO xdc_receipts VALUES(?,?,?) ON CONFLICT(token) DO UPDATE SET request_id=excluded.request_id,ok=excluded.ok", (token, request_id, int(success)))
             if request.get("notification_version") == 1:
                 conn.execute("UPDATE xdc_instances SET notifications_enabled=1 WHERE token=?", (token,))

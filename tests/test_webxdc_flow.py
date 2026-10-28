@@ -774,3 +774,41 @@ def test_existing_member_can_cancel_join_without_leaving_original_network(client
     assert state["current_network"] == old_network
     assert not state["pending"] or state["pending"]["action"] not in {"guide_join_code", "guide_nickname", "join"}
     assert len(state["networks"]) == 1
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_duplicate_request_republishes_original_result_without_reexecution(clients, success):
+    alice, _ = clients
+    alice.join()
+    alice.bridge.service.seed_network("第二网络", "second-test-code")
+    request = alice.call("join", value="second-test-code" if success else "invalid-code")
+    request_id = json.loads(request.text[len(PREFIX):])["id"]
+    first = alice.snapshot()
+    assert bool(first["receipt"]["ok"]) == success
+    pending_before = first["pending"]
+    attempts = alice.db.execute("SELECT count(*) FROM rate_events WHERE category='join_attempt'").fetchone()[0]
+    alice.call("refresh")
+    assert alice.snapshot()["receipt"]["request_id"] != request_id
+    # A cached prior snapshot must not suppress the resent acknowledgement.
+    alice.bridge.rpc.send_webxdc_status_update.reset_mock()
+    alice.bridge.handle(request)
+    alice.bridge.sync(alice.incoming)
+    resent = json.loads(alice.bridge.rpc.send_webxdc_status_update.call_args.args[2])["payload"]
+    assert resent["receipt"] == {"request_id": request_id, "ok": int(success)}
+    assert resent["pending"] == pending_before
+    assert alice.db.execute("SELECT count(*) FROM rate_events WHERE category='join_attempt'").fetchone()[0] == attempts
+
+
+def test_legacy_duplicate_with_unknown_result_is_not_reexecuted(clients):
+    alice, _ = clients
+    alice.join()
+    request = alice.call("join", value="wrong-code")
+    request_id = json.loads(request.text[len(PREFIX):])["id"]
+    alice.call("refresh")
+    with alice.bridge.service.db.transaction() as conn:
+        conn.execute("DELETE FROM xdc_request_results WHERE token=? AND request_id=?", (alice.token, request_id))
+    before = alice.db.execute("SELECT count(*) FROM rate_events WHERE category='join_attempt'").fetchone()[0]
+    alice.bridge.handle(request)
+    state = alice.snapshot()
+    assert state["receipt"] == {"request_id": request_id, "ok": 0}
+    assert alice.db.execute("SELECT count(*) FROM rate_events WHERE category='join_attempt'").fetchone()[0] == before
