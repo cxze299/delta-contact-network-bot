@@ -9,3 +9,12 @@ data
 dist
 runtime
 *.tgz
+
+legacy_python_backup
+node_modules
+tests
+.playwright-cli
+output
+e2e
+initial-network-access.txt
+admin-web-access.txt

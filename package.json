@@ -1,0 +1,24 @@
+{
+  "name": "friend-assistant",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "start": "bun src/cli.ts run",
+    "pack": "bun scripts/build-ui.ts && bun scripts/pack.ts",
+    "format": "prettier --write src tests scripts transport.js"
+  },
+  "dependencies": {
+    "@deltachat/jsonrpc-client": "2.59.0",
+    "fflate": "0.8.2",
+    "hono": "4.10.7",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/bun": "1.2.23",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3"
+  },
+  "version": "1.0.0"
+}

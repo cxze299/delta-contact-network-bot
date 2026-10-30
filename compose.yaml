@@ -1,13 +1,14 @@
-name: delta-contact-network-bot
+name: delta-contact-network-bot-bun
 services:
   contact-bot:
     build: .
-    image: delta-contact-network-bot:atomic-join-20261028
-    container_name: delta-contact-network-bot
-    # Existing Delta Core account files on this NAS are owned by root.
-    user: "0:0"
+    image: delta-contact-network-bot:bun-v1-20261030
+    container_name: friend-assistant-bun
     restart: unless-stopped
+    stop_grace_period: 15s
     env_file: .env
+    ports:
+      - "${CONTACTBOT_ADMIN_WEB_BIND:-127.0.0.1}:${CONTACTBOT_ADMIN_WEB_PORT:-8787}:8787"
     volumes:
       - ${CONTACTBOT_DATA_HOST_PATH:-./data}:/app/data
       - ${CONTACTBOT_ACCOUNT_HOST_PATH:-./runtime/account}:/app/account
@@ -16,18 +17,9 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp
-  admin-web:
-    image: delta-contact-network-bot:atomic-join-20261028
-    container_name: delta-contact-network-admin
-    user: "0:0"
-    restart: unless-stopped
-    env_file: .env
-    command: ["admin-web", "--host", "0.0.0.0", "--port", "8787"]
-    ports:
-      - "${CONTACTBOT_ADMIN_WEB_BIND:-127.0.0.1}:${CONTACTBOT_ADMIN_WEB_PORT:-8787}:8787"
-    volumes:
-      - ${CONTACTBOT_DATA_HOST_PATH:-./data}:/app/data
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8787/api/health');process.exit(r.ok?0:1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

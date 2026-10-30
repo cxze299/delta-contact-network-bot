@@ -163,7 +163,7 @@ data_dir="$storage_root/data"
 account_dir="$storage_root/runtime/account"
 rpc_dir="$storage_root/runtime/bin"
 
-if [ -e "$data_dir/contactbot.sqlite3" ] || [ -n "$(find "$account_dir" -mindepth 1 -print -quit 2>/dev/null || true)" ]; then
+if [ -e "$data_dir/bun-contactbot.sqlite3" ] || [ -n "$(find "$account_dir" -mindepth 1 -print -quit 2>/dev/null || true)" ]; then
     fail "目标目录中已有数据库或账号数据。请换一个空目录，避免覆盖现有部署"
 fi
 [ ! -e "$rpc_dir/deltachat-rpc-server" ] || fail "目标目录中已有 RPC Server；请换一个空目录，避免覆盖已有文件"
@@ -180,6 +180,7 @@ confirm=$(prompt "输入 yes 开始部署" "yes")
 
 contactbot_secret=$(generate_secret)
 admin_web_token=$(generate_secret)
+backup_password=$(generate_secret)
 xdc_admin_key=$(generate_secret)
 umask 077
 mkdir -p "$data_dir" "$account_dir" "$rpc_dir"
@@ -193,7 +194,7 @@ trap cleanup_temp EXIT HUP INT TERM
 
 cat > "$temp_env" <<EOF
 CONTACTBOT_SECRET=$contactbot_secret
-CONTACTBOT_DB=/app/data/contactbot.sqlite3
+CONTACTBOT_BUN_DB=/app/data/bun-contactbot.sqlite3
 CONTACTBOT_DISPLAY_NAME=$display_name
 CONTACTBOT_ACCOUNTS_DIR=/app/account
 CONTACTBOT_SYSTEM_ADMINS=$system_admins
@@ -202,6 +203,7 @@ CONTACTBOT_ACCOUNT_ID=
 CONTACTBOT_RPC_SERVER=/app/rpc/deltachat-rpc-server
 CONTACTBOT_REQUIRE_VERIFIED=true
 CONTACTBOT_ADMIN_WEB_TOKEN=$admin_web_token
+CONTACTBOT_BACKUP_PASSWORD=$backup_password
 CONTACTBOT_ADMIN_WEB_PORT=$admin_port
 CONTACTBOT_ADMIN_WEB_BIND=$admin_bind
 CONTACTBOT_INITIAL_NETWORK_CODE=
@@ -220,6 +222,7 @@ cat > "$credentials_file" <<EOF
 用户名：admin
 密码：$admin_web_token
 小程序管理员密钥：$xdc_admin_key
+备份密码：$backup_password
 端口：$admin_port
 监听地址：$admin_bind
 EOF
@@ -245,7 +248,7 @@ say "构建 Docker 镜像…"
 docker_run compose build
 
 say "设置小程序管理员密钥…"
-xdc_admin_verifier=$(printf '%s' "$xdc_admin_key" | docker_run compose run --rm -T --entrypoint /venv/bin/python contact-bot -c 'import sys; from contactbot.xdc_admin import make_verifier; print(make_verifier(sys.stdin.read()))')
+xdc_admin_verifier=$(printf '%s' "$xdc_admin_key" | docker_run compose run --rm -T --entrypoint bun contact-bot src/cli.ts verifier)
 case "$xdc_admin_verifier" in 250000:????????????????????????????????:????????????????????????????????????????????????????????????????) ;; *) fail "小程序管理员密钥配置失败；请保留现有数据并检查安装状态" ;; esac
 printf 'CONTACTBOT_XDC_ADMIN_VERIFIER=%s\n' "$xdc_admin_verifier" >> "$env_file"
 
@@ -254,7 +257,7 @@ docker_run compose run --rm contact-bot init-db
 
 say "通过 $relay_server 自动创建机器人账号…"
 account_result=$(docker_run compose run --rm contact-bot configure "dcaccount:$relay_server")
-say "$account_result"
+say "机器人添加链接已保存至凭据文件"
 
 printf '\n%s\n' "$account_result" >> "$credentials_file"
 
