@@ -696,7 +696,6 @@ function renderMe(page) {
   }
   const personalGroup = node("div", null, page, "settings-group");
   const networkGroup = node("div", null, page, "settings-group");
-  const accountGroup = node("div", null, page, "settings-group");
   if (p) {
     const contact = settingsDisclosure(personalGroup, "联系方式");
     const address = p.communication_address || state.communication_address || "";
@@ -733,28 +732,6 @@ function renderMe(page) {
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
   button(networks, "加入新网络", () => openJoin(), "primary local-navigation");
   if (state.networks.some(n => n.current)) button(networks, "退出网络", () => command("退出网络"), "danger");
-  const safety = settingsDisclosure(accountGroup, "举报与账号");
-  const directory = state.directory;
-  if (p && directory) {
-    const label = node("label", "选择好友", safety);
-    const select = node("select", null, label, "safety-select");
-    const empty = node("option", "请选择好友", select); empty.value = "";
-    for (const person of directory.members) {
-      const option = node("option", person.nickname + (person.bio ? " · " + person.bio.slice(0, 24) : ""), select);
-      option.value = person.member_code;
-    }
-    const reason = form(safety, "举报原因", value => {
-      if (!select.value) { note("请先选择好友。"); return; }
-      command("举报", select.value + " " + value);
-    }, {max: 500, multiline: true, button: "举报所选好友"});
-    const report = reason.closest("form").querySelector("button"); report.disabled = true;
-    select.onchange = () => { report.disabled = !select.value; };
-    const paging = node("div", null, safety, "pagination");
-    if (directory.page > 0) button(paging, "上一页", () => send("directory", {page: directory.page - 1}));
-    if (directory.page > 0 || directory.has_more) node("span", "第 " + (directory.page + 1) + " 页", paging, "muted");
-    if (directory.has_more) button(paging, "下一页", () => send("directory", {page: directory.page + 1}));
-  } else if (p) button(safety, "加载好友", () => send("directory", {page: 0}));
-  button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
   button(networks, "管理网络", () => {
     expandedSettings.clear(); adminView = true; adminConfirm = null; render(); scrollTop();
     // A complete snapshot is already available locally; opening the page does
