@@ -476,7 +476,8 @@ export class DeltaAdapter implements Publisher {
         const valid = this.validJob(j);
         if (!valid) throw Error("Exchange no longer valid");
         const member = valid.a.user_id === source.id ? valid.a : valid.b,
-          contact = await this.cardContact(source.contact_id);
+          contact = await this.cardContact(source.contact_id),
+          accountContact = await this.rpc.getContact(this.account, source.contact_id);
         if (
           contact.addr.toLowerCase() !== member.share_contact.toLowerCase() ||
           !contact.key
@@ -491,7 +492,7 @@ export class DeltaAdapter implements Publisher {
         const file = join(folder, name);
         writeFileSync(
           file,
-          `BEGIN:VCARD\r\nVERSION:4.0\r\nFN:${esc(member.nickname)}\r\nEMAIL:${esc(member.share_contact)}\r\nKEY;TYPE=PGP;ENCODING=b:${contact.key}\r\nEND:VCARD\r\n`,
+          `BEGIN:VCARD\r\nVERSION:4.0\r\nFN:${esc(accountContact.authName.trim() || contact.addr)}\r\nEMAIL:${esc(member.share_contact)}\r\nKEY;TYPE=PGP;ENCODING=b:${contact.key}\r\nEND:VCARD\r\n`,
           { mode: 0o600 },
         );
         this.service.s.tx(() => {

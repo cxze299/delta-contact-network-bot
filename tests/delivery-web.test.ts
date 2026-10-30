@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, test } from "bun:test";
 import { fixture } from "./fixture";
 import { DeltaAdapter } from "../src/delta_adapter";
@@ -73,6 +74,7 @@ test("send succeeds but receipt commit fails: reconcile without resend", async (
     return { addr: u.address, key: "test-public-key" } as any;
   };
   adapter.rpc = {
+    getContact: async (_account: number, id: number) => ({authName: id === 12 ? "Original Name" : ""}),
     miscSendMsg: async (
       _account: number,
       chat: number,
@@ -81,7 +83,7 @@ test("send succeeds but receipt commit fails: reconcile without resend", async (
       name: string,
     ) => {
       const id = sent.length + 1000;
-      sent.push({ id, chat, fromId: 1, fileName: name });
+      sent.push({ id, chat, fromId: 1, fileName: name, card: readFileSync(_file, "utf8") });
       return [id, {}];
     },
     getMessageIds: async (_account: number, chat: number) =>
@@ -91,6 +93,8 @@ test("send succeeds but receipt commit fails: reconcile without resend", async (
   } as any;
   await adapter.deliver();
   expect(sent.length).toBe(2);
+  expect(sent.some(x => x.card.includes("FN:Original Name\r\n"))).toBe(true);
+  expect(sent.some(x => x.card.includes("FN:two@example.org\r\n"))).toBe(true);
   expect(
     f.s.one("SELECT count(*) n FROM v2_jobs WHERE status='uncertain'")!.n,
   ).toBe(1);
