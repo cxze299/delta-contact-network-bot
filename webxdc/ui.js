@@ -154,7 +154,7 @@ function form(parent, label, submit, options = {}) {
   input.value = options.value || ""; input.placeholder = options.placeholder || "";
   input.maxLength = options.max || 160; input.required = options.required !== false;
   if (options.multiline) input.rows = 3;
-  const b = node("button", options.button || "继续", f, "primary"); b.type = "submit";
+  const b = node("button", options.button || "继续", f, options.buttonClass || "primary"); b.type = "submit";
   f.onsubmit = e => { e.preventDefault(); submittingControl = b; const value = input.value.trim(); if (options.clearOnSubmit) input.value = ""; input.blur(); submit(value); }; return input;
 }
 function accountFromInput(value) {
@@ -457,21 +457,22 @@ function renderMe(page) {
     form(profile, "昵称", value => command("编辑昵称", value), {value: p.nickname, max: 40, button: "保存昵称"});
     form(profile, "简短介绍", value => command("编辑介绍", value), {value: p.bio, required: false, multiline: true, button: "保存介绍"});
     const contact = settingsDisclosure(page, "联系方式");
-    node("p", "粘贴自己的好友链接或输入账号，保存一次即可。每次交换前会展示本次分享的账号。", contact, "muted");
-    const contactInput = form(contact, "好友链接或 Delta Chat 账号", value => {
+    const address = p.communication_address || state.communication_address || "";
+    node("p", address ? "当前账号：" + address : "暂时无法读取当前账号。", contact, "muted");
+    if (p.share_contact && p.share_contact !== address) node("p", "当前分享：" + p.share_contact, contact, "muted");
+    button(contact, "使用当前账号", () => send("use_current_account"), "primary contact-current").disabled = !address;
+    const customContact = node("details", null, contact, "contact-custom");
+    node("summary", "更改联系方式", customContact);
+    const contactInput = form(customContact, "好友链接或 Delta Chat 账号", value => {
       if (value.includes("://") || value.toLowerCase().includes("i.delta.chat/#")) {
         const account = accountFromInput(value);
         if (!account) { note("请检查好友链接格式。"); return; }
         send("command", {command: "设置联系方式", value: account, verify_current_account: true});
       } else command("设置联系方式", value);
-    }, {value: p.share_contact || "", max: 2000, multiline: true, placeholder: "粘贴好友链接或输入 name@example.org", button: "保存联系方式"});
-    const contactHint = node("p", "", contact, "muted contact-hint");
-    const updateHint = () => { const account = accountFromInput(contactInput.value); contactHint.textContent = account ? "识别到账号：" + account : contactInput.value.trim() ? "请检查好友链接或账号格式。" : ""; };
+    }, {value: p.share_contact || "", max: 2000, multiline: true, placeholder: "粘贴好友链接或输入 name@example.org", button: "保存联系方式", buttonClass: "secondary"});
+    const contactHint = node("p", "", customContact, "muted contact-hint");
+    const updateHint = () => { const value = contactInput.value.trim(), account = accountFromInput(value); contactHint.textContent = value && !account ? "请检查好友链接或账号格式。" : account && account !== value ? "识别到账号：" + account : ""; };
     contactInput.addEventListener("input", updateHint); updateHint();
-    if (p.communication_address) {
-      node("p", "当前私聊账号：" + p.communication_address, contact, "muted");
-      button(contact, "使用当前账号", () => send("use_current_account"));
-    }
     const settings = settingsDisclosure(page, "隐私设置");
     const autoRow = node("div", null, settings, "setting"); node("span", "自动交换名片", autoRow);
     const autoToggle = button(autoRow, "", () => send("auto_share", {enabled: !p.auto_share}), "ios-switch");
