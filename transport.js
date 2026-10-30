@@ -112,7 +112,7 @@
   function enqueue(payload, realtime) {
     queue = queue.then(() => receive(payload, realtime)).catch(() => {});
   }
-  api.setUpdateListener = async (callback) => {
+  window.XdcTransportListen = async (callback) => {
     listener = callback;
     await originalListen((update) => enqueue(update.payload, false), 0);
     await queue;

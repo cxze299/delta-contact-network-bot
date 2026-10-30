@@ -112,7 +112,7 @@
   function enqueue(payload, realtime) {
     queue = queue.then(() => receive(payload, realtime)).catch(() => {});
   }
-  api.setUpdateListener = async (callback) => {
+  window.XdcTransportListen = async (callback) => {
     listener = callback;
     await originalListen((update) => enqueue(update.payload, false), 0);
     await queue;
@@ -1010,8 +1010,8 @@ document.addEventListener("focusout", () => {
 });
 fitViewport();
 if (waiting) markUnknown(); else render();
-if (window.webxdc?.setUpdateListener && bound) {
-  Promise.resolve(window.webxdc.setUpdateListener(update => {
+if (window.XdcTransportListen && bound) {
+  Promise.resolve(window.XdcTransportListen(update => {
     const p = update.payload;
     if (p?.type === "contact-notification" && typeof p.id === "string" && typeof p.body === "string") {
       if (!notifications.some(n => n.id === p.id)) notifications = [...notifications, {id: p.id, body: p.body, at: p.at || ""}].slice(-200);
