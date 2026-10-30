@@ -171,9 +171,11 @@ export class Admin {
         this.service.readCode(n!.join_code_ciphertext) +
         "\n请勿公开传播。";
     } else if (op === "rotate") {
-      const code = data.code || random(24);
-      if (code.length < 16 || code.length > 200)
-        throw new UserError("加入码至少 16 字符");
+      const code = data.code === undefined ? random(24) : data.code.trim();
+      if (code.length < 6 || code.length > 200 || /\s/.test(code))
+        throw new UserError("加入码需为 6–200 个字符，不能含空格");
+      if (this.s.one("SELECT id FROM networks WHERE join_code_hash=? AND id<>?", hmac(this.service.config.secret, code), network))
+        throw new UserError("该加入码不可用，请换一个");
       this.s.run(
         "UPDATE networks SET join_code_hash=?,join_code_ciphertext=?,join_code_hint=?,updated_at=? WHERE id=?",
         hmac(this.service.config.secret, code),
