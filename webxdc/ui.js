@@ -595,11 +595,27 @@ function renderAdmin(page) {
   }
   const networks = data.networks || [], current = networks.find(n => n.id === data.current);
   if (networks.length) {
-    const chooser = node("label", null, page, "admin-network-label");
-    node("span", "当前网络", chooser);
-    const select = node("select", null, chooser, "admin-select");
-    for (const n of networks) { const option = node("option", n.name, select); option.value = String(n.id); option.selected = n.id === data.current; }
-    select.onchange = () => { adminConfirm = null; send("admin_select", {admin_network: Number(select.value), page: 0}); };
+    const chooser = button(page, "", () => {
+      const dialog = openModal("network-picker", String(data.current), "选择网络");
+      const list = node("div", null, dialog, "network-picker-list");
+      for (const n of networks) {
+        const selected = n.id === data.current;
+        const option = button(list, "", () => {
+          closeModal();
+          if (!selected) { adminConfirm = null; send("admin_select", {admin_network: n.id, page: 0}); }
+        }, "quiet network-picker-option");
+        option.setAttribute("aria-pressed", String(selected));
+        node("span", n.name, option);
+        const check = node("span", selected ? "✓" : "", option, "network-picker-check"); check.setAttribute("aria-hidden", "true");
+      }
+      const cancel = button(dialog, "取消", () => closeModal(), "quiet modal-cancel");
+      finishModal(dialog, cancel);
+    }, "quiet admin-network-picker");
+    chooser.setAttribute("aria-haspopup", "dialog");
+    node("span", "当前网络", chooser, "muted");
+    const value = node("span", null, chooser, "network-picker-value");
+    node("span", current?.name || "选择网络", value);
+    const arrow = node("span", "⌄", value, "network-chevron"); arrow.setAttribute("aria-hidden", "true");
   }
   const sections = data.system ? ["网络", "成员", "审核", "记录", "系统"] : ["网络", "成员", "审核", "记录"];
   if (!sections.includes(adminSection)) adminSection = "网络";
