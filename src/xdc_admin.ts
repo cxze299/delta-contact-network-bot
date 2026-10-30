@@ -429,6 +429,8 @@ export class Admin {
       deliveries: [],
     };
     if (current) {
+      const network = this.s.one("SELECT join_code_ciphertext FROM networks WHERE id=?", current);
+      data.join_code = network?.join_code_ciphertext ? this.service.readCode(network.join_code_ciphertext) : "";
       data.reports = this.s.all(
         "SELECT r.public_id,r.reason,r.status,r.resolution,a.nickname reporter,b.nickname target FROM reports r JOIN memberships a ON a.id=r.reporter_membership_id JOIN memberships b ON b.id=r.target_membership_id WHERE r.network_id=? ORDER BY r.id DESC LIMIT 30",
         current,

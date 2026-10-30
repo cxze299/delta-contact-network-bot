@@ -818,10 +818,12 @@ function renderAdmin(page) {
       const cancel = button(dialog, "取消", () => closeModal(), "quiet modal-cancel");
       finishModal(dialog, cancel); input.focus({preventScroll: true});
     }, current.name);
-    const row = node("div", null, card, "network-setting-row"); node("span", "允许新成员加入", row);
+    const row = node("div", null, card, "setting network-setting-row"); node("span", "允许新成员加入", row);
     const toggle = button(row, "", () => adminOperation(current.join_enabled ? "join_off" : "join_on"), "ios-switch");
     toggle.setAttribute("role", "switch"); toggle.setAttribute("aria-label", "允许新成员加入"); toggle.setAttribute("aria-checked", String(Boolean(current.join_enabled))); node("span", null, toggle, "switch-knob");
-    actionRow("查看加入码", () => adminOperation("view_code"));
+    const codeRow = node("div", null, card, "network-setting-row");
+    node("span", "加入码", codeRow);
+    node("span", data.join_code || "暂不可用", codeRow, "network-join-code");
     actionRow("更换加入码", () => adminOperation("rotate", {}, "更换后，旧加入码将失效。现有成员不受影响。"));
     if (data.system) button(page, current.status === "active" ? "停用网络" : "恢复网络", () => adminOperation(current.status === "active" ? "disable" : "enable", {}, current.status === "active" ? "停用后，该网络暂时无法使用。" : "确定恢复该网络？"), "quiet network-status-action" + (current.status === "active" ? " network-stop" : ""));
   } else if (adminSection === "成员") {
