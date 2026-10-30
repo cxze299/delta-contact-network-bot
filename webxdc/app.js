@@ -11,6 +11,18 @@
     current = null,
     version = null,
     sequence = 0;
+  let lastRealtime = 0, synced = false;
+  const connectionStatus = () => {
+    const offline = window.navigator?.onLine === false;
+    const live = !offline && lastRealtime > 0 && Date.now() - lastRealtime < 45000;
+    const label = offline ? "离线" : live ? "实时在线" : synced ? "消息连接" : "连接中";
+    for (const el of window.document?.querySelectorAll(".connection-status") || []) {
+      el.textContent = label; el.dataset.live = String(live);
+    }
+  };
+  window.XdcConnectionStatus = connectionStatus;
+  window.addEventListener?.("online", connectionStatus);
+  window.addEventListener?.("offline", connectionStatus);
   let queue = Promise.resolve(),
     initializing = true,
     finalInitial = null,
@@ -89,7 +101,9 @@
       packet.sequence <= sequence
     )
       return;
-    if (realtime) active = true;
+    synced = true;
+    if (realtime) { active = true; lastRealtime = Date.now(); }
+    connectionStatus();
     if (packet.state) current = packet.state;
     else if (current && packet.base === version && packet.patch)
       current = { ...current, ...packet.patch };
@@ -138,6 +152,8 @@
         );
         let lastPing = Date.now();
         const heartbeat = setInterval(() => {
+          connectionStatus();
+          if (active && Date.now() - lastRealtime >= 45000) active = false;
           if (!channel) return;
           const delay = active ? 20000 : 1500;
           if (Date.now() - lastPing < delay) return;
@@ -402,7 +418,7 @@ function renderJoin(page) {
   node("p", state.communication_address || state.profile?.communication_address || "当前与好友助手私聊的 Delta Chat 账号", f, "account-value");
   localSwitch(f, "在好友列表展示我", draft.discoverable, enabled => { draft.discoverable = enabled; });
   localSwitch(f, "接收好友申请", draft.accepts, enabled => { draft.accepts = enabled; });
-  node("p", "加入即同意隐私说明并开启名片交换。服务端可处理资料；交付的名片无法撤回。", f, "setup-notice");
+  node("p", "加入后开启名片交换。服务端可处理资料；交付的名片无法撤回。", f, "setup-notice");
   const submit = node("button", "加入网络", f, "primary"); submit.type = "submit"; submit.disabled = !ready;
   f.onsubmit = event => {
     event.preventDefault(); submittingControl = submit; document.activeElement?.blur();
@@ -544,7 +560,7 @@ function renderWizard() {
   } else if (p.action === "guide_recover_identity") {
     recoveryForm(w);
   } else if (p.action === "guide_incoming_request") {
-    node("p", "在“申请”页查看申请人、理由及申请类型，再选择同意、拒绝或屏蔽。", w);
+    node("p", "在“申请”页查看申请人、理由及申请类型，再选择同意或拒绝。", w);
     button(w, "查看申请", () => { tab = "申请"; render(); }, "primary");
   } else if (["leave", "delete", "rotate_code", "remove_member", "ban_member", "disable_network"].includes(p.action)) {
     node("p", p.action === "delete" ? "这会清除个人资料并使相关未完成申请失效。已交付的信息无法收回。" : p.action === "leave" ? "退出后将从当前网络移除，尚未完成的申请会失效。" : "请确认要执行此操作。", w);
@@ -621,7 +637,7 @@ function renderRequests(page) {
       const actions = node("div", null, card, "actions");
       if (r.direction === "incoming") {
         button(actions, r.request_kind === "vcard" ? "同意接收名片" : "查看分享并同意", () => command("同意申请", r.public_id), "primary");
-        button(actions, "拒绝", () => command("拒绝申请", r.public_id)); button(actions, "屏蔽此人", () => command("屏蔽", r.sender_code), "quiet");
+        button(actions, "拒绝", () => command("拒绝申请", r.public_id));
       } else button(actions, "撤销申请", () => command("撤销申请", r.public_id));
     }
     const targetCode = r.direction === "incoming" ? r.sender_code : r.recipient_code;
@@ -672,13 +688,7 @@ function renderMe(page) {
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
   button(networks, "加入新网络", () => openJoin(), "primary local-navigation");
   if (state.networks.some(n => n.current)) button(networks, "退出网络", () => command("退出网络"), "danger");
-  const safety = settingsDisclosure(page, "屏蔽、举报与账号");
-  const blocked = state.blocked_members || [];
-  if (!blocked.length) node("p", "暂无屏蔽的成员。", safety, "muted");
-  for (const person of blocked) {
-    const row = node("div", null, safety, "setting"); node("span", person.nickname, row);
-    button(row, "解除屏蔽", () => command("解除屏蔽", person.member_code));
-  }
+  const safety = settingsDisclosure(page, "举报与账号");
   const directory = state.directory;
   if (p && directory) {
     const label = node("label", "选择好友", safety);
@@ -688,24 +698,18 @@ function renderMe(page) {
       const option = node("option", person.nickname + (person.bio ? " · " + person.bio.slice(0, 24) : ""), select);
       option.value = person.member_code;
     }
-    const actions = node("div", null, safety, "actions");
-    const block = button(actions, "屏蔽所选好友", () => { if (select.value) command("屏蔽", select.value); }, "danger");
-    block.disabled = true;
     const reason = form(safety, "举报原因", value => {
       if (!select.value) { note("请先选择好友。"); return; }
       command("举报", select.value + " " + value);
     }, {max: 500, multiline: true, button: "举报所选好友"});
     const report = reason.closest("form").querySelector("button"); report.disabled = true;
-    select.onchange = () => { block.disabled = report.disabled = !select.value; };
+    select.onchange = () => { report.disabled = !select.value; };
     const paging = node("div", null, safety, "pagination");
     if (directory.page > 0) button(paging, "上一页", () => send("directory", {page: directory.page - 1}));
     if (directory.page > 0 || directory.has_more) node("span", "第 " + (directory.page + 1) + " 页", paging, "muted");
     if (directory.has_more) button(paging, "下一页", () => send("directory", {page: directory.page + 1}));
   } else if (p) button(safety, "加载好友", () => send("directory", {page: 0}));
   button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
-  const info = settingsDisclosure(page, "隐私说明与使用帮助"); privacy(info);
-  node("p", "仅公开资料的成员会出现在目录中。申请 7 天后过期；双方确认后交换联系方式，请自行核验身份。", info, "muted");
-  node("p", "点击按钮即可操作，结果自动同步。不需要返回聊天发送指令，也不需要网页后台账号。首次获取或更新时才需发送“小程序”。", info, "muted");
   button(page, "管理网络 ›", () => {
     expandedSettings.clear(); adminView = true; adminConfirm = null; render(); scrollTop();
     // A complete snapshot is already available locally; opening the page does
@@ -760,7 +764,9 @@ function renderAdmin(page) {
   const top = node("div", null, page, "admin-top");
   button(top, "‹ 返回", () => { adminView = false; adminConfirm = null; render(); }, "quiet admin-back");
   node("h1", "网络管理", top);
-  if (state.admin?.unlocked) button(top, "退出授权", () => { adminConfirm = null; send("admin_lock"); }, "quiet admin-lock");
+  const topActions = node("div", null, top, "admin-top-actions");
+  node("span", "连接中", topActions, "connection-status");
+  if (state.admin?.unlocked) button(topActions, "退出授权", () => { adminConfirm = null; send("admin_lock"); }, "quiet admin-lock");
   const data = state.admin;
   if (!data) { node("div", "正在打开管理工具…", page, "empty muted"); return; }
   if (!data.unlocked) {
@@ -796,7 +802,7 @@ function renderAdmin(page) {
     node("span", "当前网络", chooser, "muted");
     const value = node("span", null, chooser, "network-picker-value");
     node("span", current?.name || "选择网络", value);
-    const arrow = node("span", "⌄", value, "network-chevron"); arrow.setAttribute("aria-hidden", "true");
+    const arrow = node("span", "", value, "network-picker-chevron"); arrow.setAttribute("aria-hidden", "true");
   }
   const sections = data.system ? ["网络", "成员", "审核", "记录", "系统"] : ["网络", "成员", "审核", "记录"];
   if (!sections.includes(adminSection)) adminSection = "网络";
@@ -936,7 +942,7 @@ function render() {
     node("h1", "欢迎使用好友助手", page);
     const card = node("section", null, page, "card"); node("h2", "先连接好友助手", card);
     node("p", "点击下方按钮，把“小程序”发送给好友助手，然后打开收到的应用。", card);
-    button(card, "向好友助手获取我的应用", () => send("refresh"), "primary"); privacy(card);
+    button(card, "向好友助手获取我的应用", () => send("refresh"), "primary"); 
   } else if (!ready) {
     node("h1", "正在读取你的网络", page); node("p", "等待机器人状态。若一直未出现，回到私聊发送“小程序”。", page, "empty muted");
   } else if (!state.profile && !["我的", "消息"].includes(tab)) {
@@ -959,6 +965,7 @@ function render() {
 
   } else renderMe(page);
   renderNav();
+  window.XdcConnectionStatus?.();
   syncOperationControls();
   if (modalKind !== "wizard") {
     if (tab === "我的" && adminView && state.admin?.unlocked) renderAdminConfirm();
@@ -994,7 +1001,7 @@ function renderFromRemote(force) {
   deferredRemoteRender = false;
   render();
 }
-$("refresh").onclick = () => send("refresh");
+
 let viewportFrame;
 let keyboardScroll = null;
 let restingHeight = document.documentElement.clientHeight || window.innerHeight;

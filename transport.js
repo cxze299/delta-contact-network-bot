@@ -11,6 +11,18 @@
     current = null,
     version = null,
     sequence = 0;
+  let lastRealtime = 0, synced = false;
+  const connectionStatus = () => {
+    const offline = window.navigator?.onLine === false;
+    const live = !offline && lastRealtime > 0 && Date.now() - lastRealtime < 45000;
+    const label = offline ? "离线" : live ? "实时在线" : synced ? "消息连接" : "连接中";
+    for (const el of window.document?.querySelectorAll(".connection-status") || []) {
+      el.textContent = label; el.dataset.live = String(live);
+    }
+  };
+  window.XdcConnectionStatus = connectionStatus;
+  window.addEventListener?.("online", connectionStatus);
+  window.addEventListener?.("offline", connectionStatus);
   let queue = Promise.resolve(),
     initializing = true,
     finalInitial = null,
@@ -89,7 +101,9 @@
       packet.sequence <= sequence
     )
       return;
-    if (realtime) active = true;
+    synced = true;
+    if (realtime) { active = true; lastRealtime = Date.now(); }
+    connectionStatus();
     if (packet.state) current = packet.state;
     else if (current && packet.base === version && packet.patch)
       current = { ...current, ...packet.patch };
@@ -138,6 +152,8 @@
         );
         let lastPing = Date.now();
         const heartbeat = setInterval(() => {
+          connectionStatus();
+          if (active && Date.now() - lastRealtime >= 45000) active = false;
           if (!channel) return;
           const delay = active ? 20000 : 1500;
           if (Date.now() - lastPing < delay) return;
