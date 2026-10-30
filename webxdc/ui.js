@@ -568,7 +568,6 @@ function renderAdmin(page) {
   button(top, "‹ 返回", () => { adminView = false; adminConfirm = null; render(); }, "quiet admin-back");
   node("h1", "网络管理", top);
   const topActions = node("div", null, top, "admin-top-actions");
-  node("span", "连接中", topActions, "connection-status");
   if (state.admin?.unlocked) button(topActions, "退出授权", () => { adminConfirm = null; send("admin_lock"); }, "quiet admin-lock");
   const data = state.admin;
   if (!data) { node("div", "正在打开管理工具…", page, "empty muted"); return; }
