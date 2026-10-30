@@ -679,18 +679,25 @@ function renderRequests(page) {
 function renderMe(page) {
   const p = state.profile; node("h1", "我的", page);
   if (p) {
-    const card = node("section", null, page, "profile-overview");
-    const avatar = node("span", Array.from(p.nickname || "我")[0], card, "profile-avatar"); avatar.setAttribute("aria-hidden", "true");
-    const body = node("div", null, card); node("h2", p.nickname, body);
-    node("p", state.networks.find(n => n.current)?.name || "", body, "muted");
+    const card = node("details", null, page, "profile-overview");
+    card.open = expandedSettings.has("昵称与个人介绍");
+    card.addEventListener("toggle", () => {
+      if (!card.isConnected) return;
+      if (card.open) expandedSettings.add("昵称与个人介绍"); else expandedSettings.delete("昵称与个人介绍");
+    });
+    const header = node("summary", null, card, "profile-summary");
+    const avatar = node("span", Array.from(p.nickname || "我")[0], header, "profile-avatar"); avatar.setAttribute("aria-hidden", "true");
+    const body = node("div", null, header, "profile-copy"); node("h2", p.nickname, body);
+    node("p", p.bio || "暂无个人介绍", body, "muted");
+    const arrow = node("span", "", header, "profile-chevron"); arrow.setAttribute("aria-hidden", "true");
+    const profile = node("div", null, card, "profile-editor");
+    form(profile, "昵称", value => command("编辑昵称", value), {value: p.nickname, max: 40, button: "保存昵称"});
+    form(profile, "简短介绍", value => command("编辑介绍", value), {value: p.bio, required: false, multiline: true, button: "保存介绍"});
   }
   const personalGroup = node("div", null, page, "settings-group");
   const networkGroup = node("div", null, page, "settings-group");
   const accountGroup = node("div", null, page, "settings-group");
   if (p) {
-    const profile = settingsDisclosure(personalGroup, "昵称与个人介绍");
-    form(profile, "昵称", value => command("编辑昵称", value), {value: p.nickname, max: 40, button: "保存昵称"});
-    form(profile, "简短介绍", value => command("编辑介绍", value), {value: p.bio, required: false, multiline: true, button: "保存介绍"});
     const contact = settingsDisclosure(personalGroup, "联系方式");
     const address = p.communication_address || state.communication_address || "";
     node("p", address ? "当前账号：" + address : "暂时无法读取当前账号。", contact, "muted");
