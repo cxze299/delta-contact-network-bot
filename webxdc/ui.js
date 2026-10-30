@@ -194,7 +194,12 @@ function settingsDisclosure(parent, title) {
     if (!section.isConnected) return;
     if (section.open) expandedSettings.add(title); else expandedSettings.delete(title);
   });
-  return section;
+  section.classList.add("settings-cell");
+  const summary = section.querySelector("summary");
+  const label = node("span", title, null); summary.replaceChildren(label);
+  const preview = title === "联系方式" ? (state.profile?.share_contact ? "已设置" : "未设置") : title === "隐私设置" ? (state.profile?.discoverable ? "资料公开" : "资料隐藏") : title === "我的网络" ? state.networks.length + " 个网络" : "";
+  if (preview) node("span", preview, summary, "settings-preview");
+  return node("div", null, section, "settings-body");
 }
 function privacy(parent) {
   node("p", "机器人服务端可以处理你发送的数据。只收集昵称、介绍及必要账号标识；目录不展示联系方式。", parent, "muted");
@@ -378,6 +383,13 @@ function renderWizard() {
   }, modal ? "quiet modal-cancel wizard-back" : "quiet wizard-back");
   if (modal) finishModal(w, cancel);
 }
+function emptyState(parent, title, detail, type = "people") {
+  const box = node("div", null, parent, "empty-state");
+  const paths = {people: "M3 20v-2a5 5 0 0 1 10 0v2M8 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M16 4a4 4 0 0 1 0 8M17 15a5 5 0 0 1 4 5", message: "M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2M7 9h10M7 13h6", request: "M5 3h14v18H5zM8 8h8M8 12h8M8 16h5"};
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(svg.namespaceURI, "path"); path.setAttribute("d", paths[type]); svg.append(path); box.append(svg);
+  node("h2", title, box); if (detail) node("p", detail, box); return box;
+}
 function renderFind(page) {
   node("h1", "好友", page);
   const directory = state.directory;
@@ -387,7 +399,8 @@ function renderFind(page) {
     return;
   }
   if (!directory.members.length) {
-    node("div", "这一页还没有公开资料的成员。", page, "empty muted");
+    const empty = emptyState(page, "暂时没有好友", "同网络中公开资料的成员会显示在这里。");
+    button(empty, "我的资料", () => { tab = "我的"; render(); scrollTop(); }, "secondary local-navigation");
   }
   const list = node("div", null, page, "friends-list");
   for (const person of directory.members) {
@@ -409,28 +422,44 @@ function renderFind(page) {
   if (directory.has_more) button(paging, "下一页", () => { selected = null; send("directory", {page: directory.page + 1}); });
 }
 function unreadCount() { return notifications.filter(n => !readNotifications[n.id]).length; }
+function notificationTime(value) {
+  const date = new Date(value); if (!Number.isFinite(date.getTime())) return "";
+  const now = new Date(), yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const time = date.toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", hour12: false});
+  if (date.toDateString() === now.toDateString()) return time;
+  if (date.toDateString() === yesterday.toDateString()) return "昨天 " + time;
+  return date.toLocaleDateString("zh-CN", { ...(date.getFullYear() !== now.getFullYear() ? {year: "numeric"} : {}), month: "2-digit", day: "2-digit"});
+}
+function notificationMeta(text) {
+  if (text.startsWith("名片已发送")) return {title: "名片已发送", icon: "✓", kind: "success"};
+  if (text.includes("正在与你交换名片")) return {title: "名片交换", icon: "⇄", kind: "exchange"};
+  if (text.includes("希望与你交换名片")) return {title: "交换申请", icon: "⇄", kind: "exchange"};
+  return {title: "网络通知", icon: "·", kind: "notice"};
+}
 function renderNotifications(page) {
   node("h1", "消息", page);
   if (!notifications.length) {
-    if (state.pending?.action !== "send_request") node("div", "暂时没有新消息", page, "empty muted");
+    if (state.pending?.action !== "send_request") emptyState(page, "暂无消息", "名片交换和网络通知会显示在这里。", "message");
     return;
   }
   const list = node("div", null, page, "notification-list");
   for (const n of [...notifications].reverse()) {
     const card = node("article", null, list, "notification-row");
-    const icon = node("img", null, card, "notification-avatar"); icon.src = "icon.png"; icon.alt = "";
+    const meta = notificationMeta(n.body);
+    const icon = node("span", meta.icon, card, "notification-symbol " + meta.kind); icon.setAttribute("aria-hidden", "true");
     const body = node("div", null, card, "notification-body");
-    node("strong", "好友助手", body);
-    if (n.at) node("time", n.at.replace("T", " ").slice(0, 16), body, "muted");
+    const head = node("div", null, body, "notification-heading");
+    node("strong", meta.title, head);
+    if (n.at) { const time = node("time", notificationTime(n.at), head, "muted"); time.dateTime = n.at; time.title = new Date(n.at).toLocaleString("zh-CN"); }
     node("p", visibleText(n.body), body, "notification-text");
   }
 }
 function renderRequests(page) {
-  node("h1", "我的申请", page);
+  node("h1", "申请", page);
   const tabs = node("div", null, page, "segments");
   for (const f of ["待处理", "已发出", "历史"]) button(tabs, f, () => { filter = f; render(); }, filter === f ? "selected" : "quiet").setAttribute("aria-pressed", String(filter === f));
   const rows = state.requests.filter(r => filter === "待处理" ? r.status === "pending_target" && r.direction === "incoming" : filter === "已发出" ? ["pending_target", "processing"].includes(r.status) && r.direction === "outgoing" : !["pending_target", "processing"].includes(r.status));
-  if (!rows.length) node("div", "这里暂时没有申请。收到申请后会显示在这里。", page, "empty muted");
+  if (!rows.length) emptyState(page, filter === "历史" ? "暂无历史申请" : filter === "已发出" ? "暂无已发出的申请" : "暂无待处理申请", "可以在好友页选择成员交换名片。", "request");
   const names = {pending_target: "等待同意", processing: "正在交付", completed: "已交付", rejected: "未获同意", withdrawn: "已撤销", expired: "已过期", invalid: "已失效"};
   for (const r of rows) {
     const card = node("article", null, page, "card"); node("span", r.delivery_uncertain ? "正在核对交付" : names[r.status] || "已结束", card, "badge");
@@ -451,12 +480,21 @@ function renderRequests(page) {
   }
 }
 function renderMe(page) {
-  const p = state.profile; node("h1", p?.nickname || "我的资料", page);
+  const p = state.profile; node("h1", "我的", page);
   if (p) {
-    const profile = settingsDisclosure(page, "昵称与个人介绍");
+    const card = node("section", null, page, "profile-overview");
+    const avatar = node("span", Array.from(p.nickname || "我")[0], card, "profile-avatar"); avatar.setAttribute("aria-hidden", "true");
+    const body = node("div", null, card); node("h2", p.nickname, body);
+    node("p", state.networks.find(n => n.current)?.name || "", body, "muted");
+  }
+  const personalGroup = node("div", null, page, "settings-group");
+  const networkGroup = node("div", null, page, "settings-group");
+  const accountGroup = node("div", null, page, "settings-group");
+  if (p) {
+    const profile = settingsDisclosure(personalGroup, "昵称与个人介绍");
     form(profile, "昵称", value => command("编辑昵称", value), {value: p.nickname, max: 40, button: "保存昵称"});
     form(profile, "简短介绍", value => command("编辑介绍", value), {value: p.bio, required: false, multiline: true, button: "保存介绍"});
-    const contact = settingsDisclosure(page, "联系方式");
+    const contact = settingsDisclosure(personalGroup, "联系方式");
     const address = p.communication_address || state.communication_address || "";
     node("p", address ? "当前账号：" + address : "暂时无法读取当前账号。", contact, "muted");
     if (p.share_contact && p.share_contact !== address) node("p", "当前分享：" + p.share_contact, contact, "muted");
@@ -473,7 +511,7 @@ function renderMe(page) {
     const contactHint = node("p", "", customContact, "muted contact-hint");
     const updateHint = () => { const value = contactInput.value.trim(), account = accountFromInput(value); contactHint.textContent = value && !account ? "请检查好友链接或账号格式。" : account && account !== value ? "识别到账号：" + account : ""; };
     contactInput.addEventListener("input", updateHint); updateHint();
-    const settings = settingsDisclosure(page, "隐私设置");
+    const settings = settingsDisclosure(personalGroup, "隐私设置");
     const autoRow = node("div", null, settings, "setting"); node("span", "自动交换名片", autoRow);
     const autoToggle = button(autoRow, "", () => send("auto_share", {enabled: !p.auto_share}), "ios-switch");
     autoToggle.setAttribute("role", "switch"); autoToggle.setAttribute("aria-label", "自动交换名片"); autoToggle.setAttribute("aria-checked", String(Boolean(p.auto_share))); node("span", null, autoToggle, "switch-knob");
@@ -487,11 +525,11 @@ function renderMe(page) {
       node("span", null, toggle, "switch-knob");
     }
   }
-  const networks = settingsDisclosure(page, "我的网络");
+  const networks = settingsDisclosure(networkGroup, "我的网络");
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
   button(networks, "加入新网络", () => openJoin(), "primary local-navigation");
   if (state.networks.some(n => n.current)) button(networks, "退出网络", () => command("退出网络"), "danger");
-  const safety = settingsDisclosure(page, "举报与账号");
+  const safety = settingsDisclosure(accountGroup, "举报与账号");
   const directory = state.directory;
   if (p && directory) {
     const label = node("label", "选择好友", safety);
@@ -513,7 +551,7 @@ function renderMe(page) {
     if (directory.has_more) button(paging, "下一页", () => send("directory", {page: directory.page + 1}));
   } else if (p) button(safety, "加载好友", () => send("directory", {page: 0}));
   button(safety, "恢复原账号", () => command("恢复账号")); button(safety, "删除我的数据", () => command("删除我的数据"), "danger");
-  button(page, "管理网络 ›", () => {
+  button(networks, "管理网络", () => {
     expandedSettings.clear(); adminView = true; adminConfirm = null; render(); scrollTop();
     // A complete snapshot is already available locally; opening the page does
     // not need another network round trip. A new instance needs a context.
@@ -776,7 +814,7 @@ function render() {
 }
 function renderNav() {
   $("nav").replaceChildren();
-  const icons = {"好友": "M4 20v-1a6 6 0 0 1 12 0v1M10 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM18 8h5M20.5 5.5v5", "申请": "M4 5h16v14H4zM7 9h10M7 13h7", "消息": "M4 6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H10l-5 4v-4a3 3 0 0 1-1-3z", "我的": "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0"};
+  const icons = {"好友": "M3 21v-2a6 6 0 0 1 12 0v2M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM17 4a4 4 0 0 1 0 8M18 15a5 5 0 0 1 3 4v2", "申请": "M4 5h16v14H4zM7 9h10M7 13h7", "消息": "M4 6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H10l-5 4v-4a3 3 0 0 1-1-3z", "我的": "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0"};
   for (const name of ["好友", "申请", "消息", "我的"]) {
     const b = button($("nav"), "", () => {
       if (tab === "我的" && name !== "我的") expandedSettings.clear();
