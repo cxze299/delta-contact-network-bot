@@ -613,21 +613,36 @@ function renderAdmin(page) {
   page = node("section", null, page); page.id = "admin-section";
   if (!current && adminSection !== "系统") { node("div", "暂无可管理的网络。", page, "empty muted"); return; }
   if (adminSection === "网络") {
-    const card = node("section", null, page, "card");
-    node("h2", current.name, card); node("p", current.member_count + " 位成员", card, "muted");
+    const card = node("section", null, page, "card network-settings");
+    const heading = node("div", null, card, "network-heading");
+    const identity = node("div", null, heading);
+    node("h2", current.name, identity);
+    node("p", current.member_count + " 位成员" + (current.status === "active" ? "" : " · 已停用"), identity, "muted");
     const joined = state.networks.find(n => n.public_id === current.public_id);
     if (current.status === "active") {
-      if (joined) button(card, "进入此网络", () => command("切换网络", current.public_id), "primary");
-      else if (current.join_enabled) button(card, "加入此网络", () => openJoin(), "primary local-navigation");
+      if (joined) button(heading, "进入网络", () => command("切换网络", current.public_id), "quiet");
+      else if (current.join_enabled) button(heading, "加入网络", () => openJoin(), "quiet local-navigation");
     }
-    const row = node("div", null, card, "setting"); node("span", "允许新成员加入", row);
+    const actionRow = (label, callback, value = "") => {
+      const control = button(card, "", callback, "quiet network-setting-row");
+      node("span", label, control);
+      const end = node("span", null, control, "network-setting-end");
+      if (value) node("span", value, end, "muted");
+      const arrow = node("span", "›", end, "network-chevron"); arrow.setAttribute("aria-hidden", "true");
+      return control;
+    };
+    if (data.system) actionRow("网络名称", () => {
+      const dialog = openModal("network-name", String(current.id), "修改网络名称");
+      const input = form(dialog, "网络名称", value => { closeModal(); adminOperation("rename", {name: value}); }, {value: current.name, max: 60, button: "保存"});
+      const cancel = button(dialog, "取消", () => closeModal(), "quiet modal-cancel");
+      finishModal(dialog, cancel); input.focus({preventScroll: true});
+    }, current.name);
+    const row = node("div", null, card, "network-setting-row"); node("span", "允许新成员加入", row);
     const toggle = button(row, "", () => adminOperation(current.join_enabled ? "join_off" : "join_on"), "ios-switch");
     toggle.setAttribute("role", "switch"); toggle.setAttribute("aria-label", "允许新成员加入"); toggle.setAttribute("aria-checked", String(Boolean(current.join_enabled))); node("span", null, toggle, "switch-knob");
-    adminButtonGroup(card, [["查看加入码", () => adminOperation("view_code")], ["更换加入码", () => adminOperation("rotate", {}, "更换后，旧加入码将失效。现有成员不受影响。")]]);
-    if (data.system) {
-      form(card, "修改网络名称", value => adminOperation("rename", {name: value}), {value: current.name, max: 60, button: "保存名称"});
-      button(card, current.status === "active" ? "停用网络" : "恢复网络", () => adminOperation(current.status === "active" ? "disable" : "enable", {}, current.status === "active" ? "停用后，该网络暂时无法使用。" : "确定恢复该网络？"), current.status === "active" ? "danger" : "secondary");
-    }
+    actionRow("查看加入码", () => adminOperation("view_code"));
+    actionRow("更换加入码", () => adminOperation("rotate", {}, "更换后，旧加入码将失效。现有成员不受影响。"));
+    if (data.system) button(page, current.status === "active" ? "停用网络" : "恢复网络", () => adminOperation(current.status === "active" ? "disable" : "enable", {}, current.status === "active" ? "停用后，该网络暂时无法使用。" : "确定恢复该网络？"), "quiet network-status-action" + (current.status === "active" ? " network-stop" : ""));
   } else if (adminSection === "成员") {
     const members = data.members || [];
     if (!members.length) node("div", "没有成员。", page, "empty muted");
