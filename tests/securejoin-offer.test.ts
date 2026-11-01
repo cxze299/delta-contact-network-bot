@@ -28,3 +28,10 @@ test("modern encrypted key-contact chat is offered without legacy verification a
  a.offer=async()=>{sends++;};
  try {await a.discoverEncryptedChats();expect(sends).toBe(0);encrypted=true;await a.discoverEncryptedChats();await a.onEncryptedChat(44);await a.discoverEncryptedChats();expect(sends).toBe(1);} finally {f.s.close();}
 });
+
+test("fresh re-add handshake offers again, same handshake and maintenance remain deduplicated",async()=>{
+ const f=fixture();const a=new DeltaAdapter(f.service,f.config);a.account=1;let sends=0,lastSeen=100;
+ a.rpc={getContact:async()=>({isVerified:false,isKeyContact:true,isBlocked:false,lastSeen}),createChatByContactId:async()=>44} as any;
+ a.identity=async()=>({accountId:1,chatId:44,contactId:45,address:"repeat@example.org",fingerprint:"e".repeat(40)});a.offer=async()=>{sends++;};
+ try {await a.onSecureJoin(45);await a.onSecureJoin(45,true);expect(sends).toBe(1);lastSeen=200;await a.onSecureJoin(45,true);await a.onSecureJoin(45,true);await a.onSecureJoin(45);expect(sends).toBe(2);} finally{f.s.close();}
+});

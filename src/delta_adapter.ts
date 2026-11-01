@@ -132,7 +132,7 @@ export class DeltaAdapter implements Publisher {
           else if (e.kind === "ChatModified")
             this.enqueue(() => this.onEncryptedChat(e.chatId));
           else if (e.kind === "SecurejoinInviterProgress" && e.progress === 1000)
-            this.enqueue(() => this.onSecureJoin(e.contactId));
+            this.enqueue(() => this.onSecureJoin(e.contactId, true));
           else if (e.kind === "WebxdcStatusUpdate")
             this.enqueue(async () => {
               const i = this.bridge.instance(this.account, e.msgId);
@@ -268,7 +268,7 @@ export class DeltaAdapter implements Publisher {
     if (known) return;
     await this.onSecureJoin(peers[0]);
   }
-  async onSecureJoin(contactId: number) {
+  async onSecureJoin(contactId: number, newHandshake = false) {
     if (contactId <= 9) return;
     const contact = await this.rpc.getContact(this.account, contactId);
     if ((!contact.isVerified && !contact.isKeyContact) || contact.isBlocked) return;
@@ -277,11 +277,20 @@ export class DeltaAdapter implements Publisher {
     try { identity = await this.identity(chatId, contactId); } catch { return; }
     const user = this.service.identify(identity);
     const key = `securejoin-offer:${this.account}:${identity.fingerprint}`;
+    const eventKey = key + ":last-handshake";
+    const handshake = String(contact.lastSeen);
     const claimed = this.service.s.tx(() => {
+      if (newHandshake) {
+        if (this.service.s.one("SELECT value FROM v2_runtime WHERE key=?", eventKey)?.value === handshake) return false;
+        this.service.s.run("INSERT OR REPLACE INTO v2_runtime(key,value) VALUES(?,?)", eventKey, handshake);
+        this.service.s.run("INSERT OR REPLACE INTO v2_runtime(key,value) VALUES(?,?)", key, "claimed");
+        return true;
+      }
       if (this.service.s.one("SELECT 1 FROM v2_runtime WHERE key=?", key)) return false;
       // An existing app already serves this account; reconnecting must not spam it.
       const existing = this.service.s.one("SELECT 1 FROM xdc_instances WHERE account_id=? AND actor_key=?", this.account, user.actor_key);
       this.service.s.run("INSERT INTO v2_runtime(key,value) VALUES(?,?)", key, existing ? "existing" : "claimed");
+      if (!existing) this.service.s.run("INSERT OR REPLACE INTO v2_runtime(key,value) VALUES(?,?)", eventKey, handshake);
       return !existing;
     });
     if (!claimed) return;

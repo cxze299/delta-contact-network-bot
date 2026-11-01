@@ -90,7 +90,7 @@ try {
           tail = tail
             .then(async () => {
               if (e.kind === "IncomingMsg") await adapter.incoming(e.msgId);
-              if (e.kind === "SecurejoinInviterProgress" && e.progress === 1000) await adapter.onSecureJoin(e.contactId);
+              if (e.kind === "SecurejoinInviterProgress" && e.progress === 1000) await adapter.onSecureJoin(e.contactId, true);
               if (e.kind === "WebxdcStatusUpdate") {
                 const i = adapter.bridge.instance(bot, e.msgId);
                 if (i) {
@@ -315,6 +315,18 @@ try {
     60,
   );
   console.log("E2E authenticated realtime command and reply passed");
+  const initialApps = Number(store.one("SELECT count(*) n FROM xdc_instances")!.n);
+  await rpc.deleteChat(a, clients[0].chat);
+  const rejoined = await rpc.secureJoin(a, qr);
+  await wait("automatic app after deleting and re-adding", async () => {
+    if (Number(store.one("SELECT count(*) n FROM xdc_instances")!.n) <= initialApps) return false;
+    for (const id of await rpc.getMessageIds(a,rejoined,false,false)) {
+      const m = await rpc.getMessage(a,id);
+      if (m.viewType === "Webxdc" && m.fromId !== 1 && m.showPadlock) return true;
+    }
+    return false;
+  });
+  console.log("E2E delete and re-add receives new encrypted app without text passed");
   console.log("E2E_ALL_PASS");
 } catch (e) {
   console.error(
