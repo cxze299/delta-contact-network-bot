@@ -320,7 +320,7 @@ export class DeltaAdapter implements Publisher {
       const [messageId] = await this.rpc.miscSendMsg(
         this.account,
         identity.chatId,
-        null,
+        "发送任意信息，即可获取最新小程序",
         file,
         "好友助手.xdc",
         null,
