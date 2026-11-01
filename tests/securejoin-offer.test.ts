@@ -20,3 +20,11 @@ test("unencrypted or mismatched identity never receives automatic app",async()=>
  a.identity=async()=>{throw Error("Encrypted private chat required");};a.offer=async()=>{sends++;};
  try {await a.onSecureJoin(45);expect(sends).toBe(0);} finally {f.s.close();}
 });
+
+test("modern encrypted key-contact chat is offered without legacy verification and scan recovers missed events", async()=>{
+ const f=fixture();const a=new DeltaAdapter(f.service,f.config);a.account=1;let sends=0;let encrypted=false;
+ a.rpc={getContact:async()=>({isVerified:false,isKeyContact:true,isBlocked:false}),createChatByContactId:async()=>44,getChatlistEntries:async()=>[44],getBasicChatInfo:async()=>({chatType:"Single",isEncrypted:encrypted,isDeviceChat:false,isSelfTalk:false}),getChatContacts:async()=>[45]} as any;
+ a.identity=async()=>({accountId:1,chatId:44,contactId:45,address:"modern@example.org",fingerprint:"d".repeat(40)});
+ a.offer=async()=>{sends++;};
+ try {await a.discoverEncryptedChats();expect(sends).toBe(0);encrypted=true;await a.discoverEncryptedChats();await a.onEncryptedChat(44);await a.discoverEncryptedChats();expect(sends).toBe(1);} finally {f.s.close();}
+});

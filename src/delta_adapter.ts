@@ -94,6 +94,7 @@ export class DeltaAdapter implements Publisher {
       }
     });
     this.enqueue(async () => {
+      await this.discoverEncryptedChats();
       for (const row of this.service.s.all(
         "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE x.account_id=?",
         this.account,
@@ -106,6 +107,7 @@ export class DeltaAdapter implements Publisher {
       this.enqueue(async () => {
         this.service.s.tx(() => this.service.expire());
         if (++this.maintenance % 4 === 0) {
+          await this.discoverEncryptedChats();
           for (const i of this.service.s.all(
             "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE x.account_id=?",
             this.account,
@@ -127,6 +129,8 @@ export class DeltaAdapter implements Publisher {
           const e = item.event;
           if (e.kind === "IncomingMsg")
             this.enqueue(() => this.incoming(e.msgId));
+          else if (e.kind === "ChatModified")
+            this.enqueue(() => this.onEncryptedChat(e.chatId));
           else if (e.kind === "SecurejoinInviterProgress" && e.progress === 1000)
             this.enqueue(() => this.onSecureJoin(e.contactId));
           else if (e.kind === "WebxdcStatusUpdate")
@@ -248,10 +252,26 @@ export class DeltaAdapter implements Publisher {
       return false;
     }
   }
+  async discoverEncryptedChats() {
+    const chats = await this.rpc.getChatlistEntries(this.account, 0, null, null);
+    for (const chatId of chats) {
+      try { await this.onEncryptedChat(chatId); } catch { /* A failed chat must not block others. */ }
+    }
+  }
+  async onEncryptedChat(chatId: number) {
+    if (chatId <= 9) return;
+    const chat = await this.rpc.getBasicChatInfo(this.account, chatId);
+    if (chat.chatType !== "Single" || chat.isDeviceChat || chat.isSelfTalk || !chat.isEncrypted) return;
+    const peers = (await this.rpc.getChatContacts(this.account, chatId)).filter(id => id > 9);
+    if (peers.length !== 1) return;
+    const known = this.service.s.one("SELECT 1 FROM xdc_instances WHERE account_id=? AND chat_id=?", this.account, chatId);
+    if (known) return;
+    await this.onSecureJoin(peers[0]);
+  }
   async onSecureJoin(contactId: number) {
     if (contactId <= 9) return;
     const contact = await this.rpc.getContact(this.account, contactId);
-    if (!contact.isVerified || contact.isBlocked) return;
+    if ((!contact.isVerified && !contact.isKeyContact) || contact.isBlocked) return;
     const chatId = await this.rpc.createChatByContactId(this.account, contactId);
     let identity: Identity;
     try { identity = await this.identity(chatId, contactId); } catch { return; }
