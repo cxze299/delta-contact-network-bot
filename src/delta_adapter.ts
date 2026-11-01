@@ -127,6 +127,8 @@ export class DeltaAdapter implements Publisher {
           const e = item.event;
           if (e.kind === "IncomingMsg")
             this.enqueue(() => this.incoming(e.msgId));
+          else if (e.kind === "SecurejoinInviterProgress" && e.progress === 1000)
+            this.enqueue(() => this.onSecureJoin(e.contactId));
           else if (e.kind === "WebxdcStatusUpdate")
             this.enqueue(async () => {
               const i = this.bridge.instance(this.account, e.msgId);
@@ -245,6 +247,27 @@ export class DeltaAdapter implements Publisher {
     } catch {
       return false;
     }
+  }
+  async onSecureJoin(contactId: number) {
+    if (contactId <= 9) return;
+    const contact = await this.rpc.getContact(this.account, contactId);
+    if (!contact.isVerified || contact.isBlocked) return;
+    const chatId = await this.rpc.createChatByContactId(this.account, contactId);
+    let identity: Identity;
+    try { identity = await this.identity(chatId, contactId); } catch { return; }
+    const user = this.service.identify(identity);
+    const key = `securejoin-offer:${this.account}:${identity.fingerprint}`;
+    const claimed = this.service.s.tx(() => {
+      if (this.service.s.one("SELECT 1 FROM v2_runtime WHERE key=?", key)) return false;
+      // An existing app already serves this account; reconnecting must not spam it.
+      const existing = this.service.s.one("SELECT 1 FROM xdc_instances WHERE account_id=? AND actor_key=?", this.account, user.actor_key);
+      this.service.s.run("INSERT INTO v2_runtime(key,value) VALUES(?,?)", key, existing ? "existing" : "claimed");
+      return !existing;
+    });
+    if (!claimed) return;
+    // Persist before delivery: an ambiguous send is never automatically repeated.
+    await this.offer(user, identity);
+    this.service.s.run("UPDATE v2_runtime SET value='sent' WHERE key=?", key);
   }
   async incoming(id: number) {
     const m = await this.rpc.getMessage(this.account, id);

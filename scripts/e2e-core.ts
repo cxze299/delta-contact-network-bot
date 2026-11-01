@@ -90,6 +90,7 @@ try {
           tail = tail
             .then(async () => {
               if (e.kind === "IncomingMsg") await adapter.incoming(e.msgId);
+              if (e.kind === "SecurejoinInviterProgress" && e.progress === 1000) await adapter.onSecureJoin(e.contactId);
               if (e.kind === "WebxdcStatusUpdate") {
                 const i = adapter.bridge.instance(bot, e.msgId);
                 if (i) {
@@ -136,17 +137,17 @@ try {
       const peer = await rpc.getContact(account, peers[0]);
       return peer.isVerified;
     });
-    const beforeIds = new Set(
-      await rpc.getMessageIds(account, chat, false, false),
-    );
-    await rpc.miscSendTextMessage(account, chat, "integration app");
+
     const message = await wait("bot sends app", async () => {
       for (const id of (
         await rpc.getMessageIds(account, chat, false, false)
       ).reverse()) {
-        if (beforeIds.has(id)) continue;
         const m = await rpc.getMessage(account, id);
-        if (m.fromId !== 1 && m.viewType === "Webxdc") return m;
+        if (m.fromId !== 1 && m.viewType === "Webxdc") {
+          const config = Buffer.from(await rpc.getWebxdcBlob(account,id,"config.js"),"base64").toString();
+          const token = JSON.parse(config.slice(config.indexOf("=")+1).replace(/;\s*$/, "")).token;
+          if (store.one("SELECT 1 FROM xdc_instances WHERE token=?",token)) return m;
+        }
       }
       return null;
     });
@@ -159,7 +160,7 @@ try {
       ).token;
     clients.push({ account, chat, message: message.id, token });
   }
-  console.log("E2E encrypted app delivery passed");
+  console.log("E2E automatic encrypted app delivery without user message passed");
   const first = store.one(
     "SELECT * FROM users WHERE contact_id>9 ORDER BY id LIMIT 1",
   )!;
