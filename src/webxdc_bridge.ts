@@ -86,7 +86,7 @@ export class Bridge {
         if (error) throw new UserError(error);
         this.service.expire();
         if (
-          !["refresh", "join_network", "cancel_join", "start"].includes(
+          !["refresh", "get_latest_app", "join_network", "cancel_join", "start"].includes(
             c.action,
           ) &&
           c.network !== user.current_network_id
@@ -94,6 +94,11 @@ export class Bridge {
           throw new UserError("当前网络已变化，请查看最新状态后操作");
         const value = c.value || "";
         switch (c.action) {
+          case "get_latest_app":
+            this.service.rate(user.actor_key, "latest_app", 2, 60);
+            this.s.run("INSERT INTO v2_app_updates(token,request_id) VALUES(?,?)", instance.token, c.id);
+            message = "已请求新版，请返回好友助手聊天查看。";
+            break;
           case "start":
           case "refresh":
             break;

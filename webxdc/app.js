@@ -1047,17 +1047,9 @@ function renderAdmin(page) {
     node("p", "系统会生成加入码，请妥善保管。", card, "muted");
   }
 }
-let requestingLatest = false;
-async function getLatestApp() {
-  if (requestingLatest) return;
-  requestingLatest = true;
-  const control = $("get-latest"); control.disabled = true;
-  try {
-    if (typeof window.webxdc?.sendToChat !== "function") throw new Error("unsupported");
-    await window.webxdc.sendToChat({text: "小程序"});
-    note("发送后，打开机器人返回的最新小程序。");
-  } catch { note("请向好友助手发送任意消息，获取最新版。"); }
-  finally { requestingLatest = false; control.disabled = false; }
+function getLatestApp() {
+  submittingControl = $("get-latest");
+  send("get_latest_app");
 }
 function render() {
   const update = $("get-latest");
@@ -1249,6 +1241,7 @@ if (window.XdcTransportListen && bound) {
         }, 3000);
       }
       const showConfirmation = waiting.openMessages && p.receipt.ok && p.pending?.action === "send_request";
+      const latestRequested = waiting.kind === "get_latest_app" && p.receipt.ok;
       const recoverySubmitted = waiting.kind === "recover_by_name" && p.receipt.ok;
       const joiningStep = ["guide_join_code", "guide_nickname", "join"].includes(operationStep);
       const cancelledJoin = p.receipt.ok && joiningStep && (waiting.kind === "cancel_join" || (waiting.kind === "command" && waiting.command === "取消"));
@@ -1265,7 +1258,7 @@ if (window.XdcTransportListen && bound) {
         scrollTop();
       }
       const error = (p.recent_receipts || []).find(receipt => receipt.request_id === p.receipt.request_id)?.error;
-      note(p.receipt.ok ? (recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : cancelledJoin ? "已取消加入。" : completedJoin ? "已进入所选网络。" : "操作完成。") : (error || p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
+      note(p.receipt.ok ? (latestRequested ? "已请求新版，请返回好友助手聊天查看。" : recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : cancelledJoin ? "已取消加入。" : completedJoin ? "已进入所选网络。" : "操作完成。") : (error || p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
     } else if (!waiting && firstState && !settled.length) note("");
     if (receivedReceipt || joinResult || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt || Boolean(joinResult) || changed);
     if (adminReceipt && adminView) {

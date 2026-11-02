@@ -451,7 +451,24 @@ export class DeltaAdapter implements Publisher {
       return null;
     return { r, a, b };
   }
+  async deliverAppUpdates() {
+    for (const job of this.service.s.all("SELECT q.*,x.chat_id,v.user_id FROM v2_app_updates q JOIN xdc_instances x ON x.token=q.token JOIN v2_instances v ON v.token=q.token WHERE q.status='pending' AND x.account_id=?", this.account)) {
+      // Persist the attempt before sending: ambiguous delivery must never auto-retry.
+      this.service.s.run("UPDATE v2_app_updates SET status='sending' WHERE token=? AND request_id=? AND status='pending'", job.token, job.request_id);
+      try {
+        const user = this.service.user(job.user_id);
+        if (user.deleted_at) throw new Error("Deleted user");
+        const identity = await this.identity(job.chat_id, user.contact_id);
+        if (this.service.identify(identity).id !== user.id) throw new Error("Identity mismatch");
+        await this.offer(user, identity);
+        this.service.s.run("UPDATE v2_app_updates SET status='sent' WHERE token=? AND request_id=?", job.token, job.request_id);
+      } catch {
+        this.service.s.run("UPDATE v2_app_updates SET status='uncertain' WHERE token=? AND request_id=?", job.token, job.request_id);
+      }
+    }
+  }
   async deliver() {
+    await this.deliverAppUpdates();
     for (const j of this.service.s.all(
       "SELECT * FROM v2_jobs WHERE status IN ('pending','sending','uncertain') ORDER BY id",
     )) {
