@@ -588,7 +588,9 @@ function emptyState(parent, title, detail, type = "people") {
   node("h2", title, box); if (detail) node("p", detail, box); return box;
 }
 function renderFind(page) {
-  node("h1", "好友", page);
+  const title = node("div", null, page, "friends-heading");
+  node("h1", "好友", title);
+  node("span", "（点击名字可查看别名）", title, "muted");
   const directory = state.directory;
   if (!directory) {
     node("div", "正在加载好友列表…", page, "empty muted");
@@ -603,7 +605,15 @@ function renderFind(page) {
   for (const person of directory.members) {
     const card = node("article", null, list, "person"); node("span", person.nickname.slice(0, 1), card, "avatar");
     const content = node("div", null, card);
-    node("h3", person.nickname, content); if (person.bio) node("p", person.bio, content, "muted");
+    const heading = node("h3", null, content);
+    button(heading, person.nickname, () => {
+      const dialog = openModal("aliases", person.member_code, "同账号别名");
+      const names = person.display_names?.length ? person.display_names : [person.nickname];
+      const ordered = node("ol", null, dialog, "alias-list");
+      for (const name of names) node("li", name, ordered);
+      const cancel = button(dialog, "关闭", () => closeModal(), "secondary");
+      finishModal(dialog, cancel);
+    }, "friend-name");
     const blocked = (state.blocked_members || []).some(m => m.member_code === person.member_code);
     const exchange = button(content, blocked ? "已屏蔽" : "交换名片", () => {
       if (!state.profile?.share_contact) {
@@ -680,19 +690,22 @@ function renderMe(page) {
   const p = state.profile; node("h1", "我的", page);
   if (p) {
     const card = node("details", null, page, "profile-overview");
-    card.open = expandedSettings.has("昵称与个人介绍");
+    card.open = expandedSettings.has("昵称显示排序");
     card.addEventListener("toggle", () => {
       if (!card.isConnected) return;
-      if (card.open) expandedSettings.add("昵称与个人介绍"); else expandedSettings.delete("昵称与个人介绍");
+      if (card.open) expandedSettings.add("昵称显示排序"); else expandedSettings.delete("昵称显示排序");
     });
     const header = node("summary", null, card, "profile-summary");
     const avatar = node("span", Array.from(p.nickname || "我")[0], header, "profile-avatar"); avatar.setAttribute("aria-hidden", "true");
     const body = node("div", null, header, "profile-copy"); node("h2", p.nickname, body);
-    node("p", p.bio || "暂无个人介绍", body, "muted");
+    node("p", "昵称显示排序", body, "muted");
     const arrow = node("span", "", header, "profile-chevron"); arrow.setAttribute("aria-hidden", "true");
     const profile = node("div", null, card, "profile-editor");
-    form(profile, "昵称", value => command("编辑昵称", value), {value: p.nickname, max: 40, button: "保存昵称"});
-    form(profile, "简短介绍", value => command("编辑介绍", value), {value: p.bio, required: false, multiline: true, button: "保存介绍"});
+    form(profile, "昵称显示排序", value => command("昵称显示排序", value), {
+      value: (p.display_names?.length ? p.display_names : [p.nickname]).join("\n"),
+      max: 409, multiline: true, placeholder: "每行一个昵称，第一个显示在首页", button: "保存排序"
+    });
+    node("p", "每行一个昵称，按从上到下的顺序显示。", profile, "muted");
   }
   const personalGroup = node("div", null, page, "settings-group");
   const networkGroup = node("div", null, page, "settings-group");

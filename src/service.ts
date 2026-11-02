@@ -359,7 +359,7 @@ export class Service {
     if (!previous || previous.status !== "active") {
       if (previous)
         this.s.run(
-          "UPDATE memberships SET nickname=?,bio='',discoverable=?,accepts_requests=?,share_contact=?,share_version=share_version+1,status='active',role='member',updated_at=? WHERE id=?",
+          "UPDATE memberships SET nickname=?,display_names='[]',bio='',discoverable=?,accepts_requests=?,share_contact=?,share_version=share_version+1,status='active',role='member',updated_at=? WHERE id=?",
           nickname,
           Number(c.discoverable),
           Number(c.accepts_requests),
@@ -551,6 +551,13 @@ export class Service {
       });
       return "";
     }
+    if (name === "昵称显示排序") {
+      const names = value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+      if (!names.length || names.length > 10 || names.some(v => v.length > 40) || new Set(names).size !== names.length)
+        throw new UserError("请填写 1–10 个不重复的昵称，每个最多 40 字");
+      this.s.run("UPDATE memberships SET nickname=?,display_names=?,updated_at=? WHERE id=?", names[0], JSON.stringify(names), now(), me.id);
+      return "已保存。";
+    }
     if (name === "编辑昵称" || name === "编辑介绍") {
       const max = name === "编辑昵称" ? 40 : 300;
       if ((name === "编辑昵称" && !value.trim()) || value.length > max)
@@ -561,6 +568,7 @@ export class Service {
         now(),
         me.id,
       );
+      if (name === "编辑昵称") this.s.run("UPDATE memberships SET display_names='[]' WHERE id=?", me.id);
       return "已保存。";
     }
     if (name === "设置联系方式") {
@@ -815,7 +823,7 @@ export class Service {
     )) {
       this.invalidate(m.id, "left");
       this.s.run(
-        "UPDATE memberships SET nickname='已删除成员',bio='',share_contact=NULL,discoverable=0,accepts_requests=0,role='member' WHERE id=?",
+        "UPDATE memberships SET nickname='已删除成员',display_names='[]',bio='',share_contact=NULL,discoverable=0,accepts_requests=0,role='member' WHERE id=?",
         m.id,
       );
       this.s.run("DELETE FROM xdc_auto_share WHERE membership_id=?", m.id);

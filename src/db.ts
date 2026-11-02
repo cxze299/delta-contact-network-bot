@@ -21,6 +21,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS v2_runtime(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS v2_notifications(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS v2_aliases(actor_key TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id));`);
+    if (!this.db.query("PRAGMA table_info(memberships)").all().some((column: any) => column.name === "display_names")) {
+      this.db.exec("ALTER TABLE memberships ADD COLUMN display_names TEXT NOT NULL DEFAULT '[]'");
+    }
   }
   one(sql: string, ...p: any[]): Row | undefined {
     return this.statement(sql).get(...p) as Row | undefined;

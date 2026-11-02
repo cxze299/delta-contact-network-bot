@@ -249,7 +249,7 @@ export class Bridge {
         instance.token,
       )!,
       profile = this.s.one(
-        "SELECT member_code,nickname,bio,discoverable,accepts_requests,share_contact,id FROM memberships WHERE user_id=? AND network_id=? AND status='active'",
+        "SELECT member_code,nickname,bio,display_names,discoverable,accepts_requests,share_contact,id FROM memberships WHERE user_id=? AND network_id=? AND status='active'",
         u.id,
         u.current_network_id,
       );
@@ -282,14 +282,14 @@ export class Bridge {
         ),
         page = Math.min(ctx.page, Math.max(0, Math.ceil(total / 12) - 1)),
         members = this.s.all(
-          "SELECT member_code,nickname,bio FROM memberships WHERE network_id=? AND status='active' AND discoverable=1 AND user_id<>? ORDER BY nickname,member_code LIMIT 13 OFFSET ?",
+          "SELECT member_code,nickname,display_names FROM memberships WHERE network_id=? AND status='active' AND discoverable=1 AND user_id<>? ORDER BY nickname,member_code LIMIT 13 OFFSET ?",
           u.current_network_id,
           u.id,
           page * 12,
         );
       directory = {
         page,
-        members: members.slice(0, 12),
+        members: members.slice(0, 12).map(m => ({ ...m, display_names: JSON.parse(m.display_names || "[]") })),
         has_more: members.length > 12,
       };
     }
@@ -307,6 +307,7 @@ export class Bridge {
         "SELECT 1 FROM xdc_auto_share WHERE membership_id=?",
         profile.id,
       );
+      profile.display_names = JSON.parse(profile.display_names || "[]");
       profile.communication_address = u.address;
       delete profile.id;
     }
