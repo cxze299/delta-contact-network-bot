@@ -115,3 +115,5 @@ h1{font-size:26px;letter-spacing:-.02em;margin:16px 0 18px;line-height:1.25}.top
 #get-latest{border:0;border-radius:10px;background:var(--soft);color:var(--blue);font-size:13px;font-weight:600;min-height:44px;padding:6px 8px;white-space:nowrap}#get-latest[hidden]{display:none}.brand:has(#get-latest:not([hidden])){gap:4px}
 
 .topbar.has-update{grid-template-columns:110px minmax(0,1fr) 110px}.topbar.has-update .header-network{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.ios-switch[aria-busy="true"]{opacity:.65}.ios-switch[aria-busy="true"] .switch-knob{box-shadow:0 0 0 2px rgba(0,0,0,.16)}

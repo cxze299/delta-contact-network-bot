@@ -76,7 +76,18 @@ function syncOperationControls() {
 }
 function operationFeedback(phase) {
   if (busyControl?.isConnected) {
-    if (!phase) {
+    if (busyControl.getAttribute("role") === "switch") {
+      if (phase) {
+        busyControl.setAttribute("aria-checked", String(busyControl.dataset.originalChecked !== "true"));
+        busyControl.setAttribute("aria-busy", "true");
+        busyControl.disabled = true;
+        busyControl.title = "正在保存，尚未生效";
+      } else {
+        busyControl.setAttribute("aria-checked", busyControl.dataset.originalChecked);
+        busyControl.removeAttribute("aria-busy"); busyControl.removeAttribute("title");
+        busyControl.disabled = false;
+      }
+    } else if (!phase) {
       busyControl.textContent = busyControl.dataset.originalLabel;
       busyControl.disabled = false; busyControl.removeAttribute("aria-busy");
     } else {
@@ -126,7 +137,10 @@ async function send(action, extra = {}) {
   if (!window.webxdc.sendUpdate || !crypto.subtle) { note("当前客户端缺少所需能力，请更新 Delta Chat。"); return; }
   preparing = true;
   busyControl = submittingControl?.isConnected && submittingControl.tagName === "BUTTON" ? submittingControl : null;
-  if (busyControl) busyControl.dataset.originalLabel = busyControl.textContent;
+  if (busyControl) {
+    busyControl.dataset.originalLabel = busyControl.textContent;
+    if (busyControl.getAttribute("role") === "switch") busyControl.dataset.originalChecked = busyControl.getAttribute("aria-checked");
+  }
   operationFeedback("sending");
   const operationStep = state.pending?.action;
   const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
