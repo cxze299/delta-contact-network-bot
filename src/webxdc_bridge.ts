@@ -430,14 +430,20 @@ export class Bridge {
         /* Durable update remains authoritative. */
       }
     }
+    const lastNotice = state.notifications?.at(-1);
+    const latestInstance = this.s.one("SELECT x.token FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE v.user_id=? ORDER BY x.rowid DESC LIMIT 1", fresh.user_id);
+    const noticeAge = lastNotice ? Date.now() - Date.parse(lastNotice.at) : Infinity;
+    let nativeNotify = false;
+    if (previous && latestInstance?.token === fresh.token && lastNotice && noticeAge >= 0 && noticeAge <= 120000 &&
+        !state.read_notifications.includes(lastNotice.id) && previous.notifications?.at(-1)?.id !== lastNotice.id) {
+      // Claim before delivery: a crash after Core sends must not repeat the alert.
+      nativeNotify = this.s.run("INSERT OR IGNORE INTO v2_native_notices VALUES(?)", lastNotice.id).changes === 1;
+    }
     await this.publisher.status(
       fresh.account_id,
       fresh.message_id,
       encrypt(cold, fresh.token),
-      !!previous &&
-        previous.notifications?.at(-1)?.id !==
-          state.notifications?.at(-1)?.id &&
-        state.notifications?.length > 0 && !state.read_notifications.includes(state.notifications.at(-1)?.id),
+      nativeNotify,
     );
     this.fullSnapshots.delete(fresh.token);
     this.s.tx(() =>
