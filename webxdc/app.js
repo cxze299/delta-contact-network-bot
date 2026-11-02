@@ -587,10 +587,82 @@ function emptyState(parent, title, detail, type = "people") {
   const path = document.createElementNS(svg.namespaceURI, "path"); path.setAttribute("d", paths[type]); svg.append(path); box.append(svg);
   node("h2", title, box); if (detail) node("p", detail, box); return box;
 }
+const nameDrafts = new Map();
+function renderNameEditor(parent, profile) {
+  const original = profile.display_names?.length ? profile.display_names : [profile.nickname];
+  const base = JSON.stringify(original), key = profile.member_code;
+  let draft = nameDrafts.get(key);
+  if (!draft || draft.base !== base) {
+    draft = {base, names: [...original]}; nameDrafts.set(key, draft);
+  }
+  const toolbar = node("div", null, parent, "name-toolbar");
+  node("span", "昵称显示排序", toolbar);
+  const save = button(toolbar, "保存", () => {
+    const names = draft.names.map(name => name.trim());
+    if (names.some(name => !name || name.length > 40) || new Set(names).size !== names.length) {
+      note("昵称不能为空或重复，每个最多 40 字。"); return;
+    }
+    submittingControl = save;
+    command("昵称显示排序", names.join("\n"));
+  }, "secondary");
+  const list = node("div", null, parent, "name-sort-list");
+  const draw = () => {
+    list.replaceChildren();
+    draft.names.forEach((name, index) => {
+      const row = node("div", null, list, "name-sort-row");
+      row.dataset.index = String(index);
+      const remove = button(row, "−", () => {draft.names.splice(index, 1); draw();}, "name-remove");
+      remove.disabled = draft.names.length === 1; remove.setAttribute("aria-label", "删除昵称 " + name);
+      const input = node("input", null, row, "name-input");
+      input.value = name; input.maxLength = 40; input.placeholder = "昵称";
+      input.setAttribute("aria-label", "第 " + (index + 1) + " 个昵称");
+      input.oninput = () => {draft.names[index] = input.value;};
+      const handle = button(row, "≡", () => {}, "name-drag");
+      handle.setAttribute("aria-label", "拖动排序，或用上下方向键调整");
+      const move = target => {
+        if (target === index || target < 0 || target >= draft.names.length) return;
+        const [value] = draft.names.splice(index, 1); draft.names.splice(target, 0, value); draw();
+        list.children[target].querySelector(".name-drag").focus({preventScroll:true});
+      };
+      handle.onkeydown = e => {
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") {e.preventDefault(); move(index + (e.key === "ArrowUp" ? -1 : 1));}
+      };
+      let dragging = false, target = index;
+      handle.onpointerdown = e => {
+        if (e.button !== 0) return;
+        e.preventDefault(); handle.setPointerCapture(e.pointerId); dragging = true;
+        row.classList.add("dragging");
+      };
+      handle.onpointermove = e => {
+        if (!dragging) return;
+        const rows = [...list.children];
+        let closest = Infinity;
+        rows.forEach((candidate, i) => {
+          const box = candidate.getBoundingClientRect(), distance = Math.abs(e.clientY - (box.top + box.height / 2));
+          if (distance < closest) {closest = distance; target = i;}
+        });
+        rows.forEach((candidate, i) => candidate.classList.toggle("drop-target", i === target && i !== index));
+        const rect = list.getBoundingClientRect();
+        if (e.clientY < rect.top + 30) list.scrollTop -= 12;
+        if (e.clientY > rect.bottom - 30) list.scrollTop += 12;
+      };
+      const cancel = () => {dragging = false; row.classList.remove("dragging"); [...list.children].forEach(r => r.classList.remove("drop-target"));};
+      handle.onpointerup = () => {if (!dragging) return; cancel(); move(target);};
+      handle.onpointercancel = cancel; handle.onlostpointercapture = cancel;
+    });
+    add.disabled = draft.names.length >= 10;
+  };
+  const add = button(parent, "+", () => {
+    if (draft.names.length >= 10) return;
+    draft.names.push(""); draw(); list.lastElementChild.querySelector("input").focus();
+  }, "name-add");
+  add.setAttribute("aria-label", "添加昵称");
+  draw();
+}
 function renderFind(page) {
   const title = node("div", null, page, "friends-heading");
   node("h1", "好友", title);
-  node("span", "（点击名字可查看别名）", title, "muted");
+  node("span", "（点击名字切换别名）", title, "muted");
   const directory = state.directory;
   if (!directory) {
     node("div", "正在加载好友列表…", page, "empty muted");
@@ -606,14 +678,15 @@ function renderFind(page) {
     const card = node("article", null, list, "person"); node("span", person.nickname.slice(0, 1), card, "avatar");
     const content = node("div", null, card);
     const heading = node("h3", null, content);
-    button(heading, person.nickname, () => {
-      const dialog = openModal("aliases", person.member_code, "同账号别名");
-      const names = person.display_names?.length ? person.display_names : [person.nickname];
-      const ordered = node("ol", null, dialog, "alias-list");
-      for (const name of names) node("li", name, ordered);
-      const cancel = button(dialog, "关闭", () => closeModal(), "secondary");
-      finishModal(dialog, cancel);
+    const names = person.display_names?.length ? person.display_names : [person.nickname];
+    let nameIndex = 0;
+    const nameButton = button(heading, names[0], () => {
+      nameIndex = (nameIndex + 1) % names.length;
+      nameButton.textContent = names[nameIndex];
+      card.querySelector(".avatar").textContent = Array.from(names[nameIndex])[0];
     }, "friend-name");
+    nameButton.setAttribute("aria-label", "点击切换昵称");
+    nameButton.setAttribute("aria-live", "polite");
     const blocked = (state.blocked_members || []).some(m => m.member_code === person.member_code);
     const exchange = button(content, blocked ? "已屏蔽" : "交换名片", () => {
       if (!state.profile?.share_contact) {
@@ -701,11 +774,7 @@ function renderMe(page) {
     node("p", "昵称显示排序", body, "muted");
     const arrow = node("span", "", header, "profile-chevron"); arrow.setAttribute("aria-hidden", "true");
     const profile = node("div", null, card, "profile-editor");
-    form(profile, "昵称显示排序", value => command("昵称显示排序", value), {
-      value: (p.display_names?.length ? p.display_names : [p.nickname]).join("\n"),
-      max: 409, multiline: true, placeholder: "每行一个昵称，第一个显示在首页", button: "保存排序"
-    });
-    node("p", "每行一个昵称，按从上到下的顺序显示。", profile, "muted");
+    renderNameEditor(profile, p);
   }
   const personalGroup = node("div", null, page, "settings-group");
   const networkGroup = node("div", null, page, "settings-group");
