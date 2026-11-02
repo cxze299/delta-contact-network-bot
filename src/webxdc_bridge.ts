@@ -86,7 +86,7 @@ export class Bridge {
         if (error) throw new UserError(error);
         this.service.expire();
         if (
-          !["refresh", "get_latest_app", "join_network", "cancel_join", "start"].includes(
+          !["refresh", "read_notifications", "get_latest_app", "join_network", "cancel_join", "start"].includes(
             c.action,
           ) &&
           c.network !== user.current_network_id
@@ -94,6 +94,21 @@ export class Bridge {
           throw new UserError("当前网络已变化，请查看最新状态后操作");
         const value = c.value || "";
         switch (c.action) {
+          case "read_notifications": {
+            const ids = JSON.parse(value);
+            if (!Array.isArray(ids) || ids.length > 30 || ids.some(id => typeof id !== "string")) throw new UserError("无效的已读记录");
+            for (const id of ids) this.s.run("INSERT OR IGNORE INTO v2_notification_reads SELECT ?,id FROM v2_notifications WHERE id=? AND user_id=?", user.id, id, user.id);
+            break;
+          }
+          case "select_alias": {
+            const me = this.service.member(user);
+            const member = this.s.one("SELECT * FROM memberships WHERE network_id=? AND member_code=? AND status='active' AND (discoverable=1 OR user_id=?)", me.network_id, value, user.id);
+            if (!member) throw new UserError("成员不可见");
+            const names = JSON.parse(member.display_names || "[]");
+            if (!(names.length ? names : [member.nickname]).includes(c.nickname)) throw new UserError("昵称已更新");
+            this.s.run("INSERT INTO v2_name_choices VALUES(?,?,?) ON CONFLICT(user_id,membership_id) DO UPDATE SET name=excluded.name", user.id, member.id, c.nickname);
+            break;
+          }
           case "get_latest_app":
             this.service.rate(user.actor_key, "latest_app", 2, 60);
             this.s.run("INSERT INTO v2_app_updates(token,request_id) VALUES(?,?)", instance.token, c.id);
@@ -335,6 +350,8 @@ export class Bridge {
     return {
       type: "contact-state",
       latest_ui_version: this.latestUiVersion,
+      read_notifications: this.s.all("SELECT notification_id FROM v2_notification_reads WHERE user_id=?", u.id).map(row => row.notification_id),
+      alias_choices: Object.fromEntries(this.s.all("SELECT m.member_code,c.name FROM v2_name_choices c JOIN memberships m ON m.id=c.membership_id WHERE c.user_id=? AND m.network_id=? AND m.status='active' AND (m.discoverable=1 OR m.user_id=?)", u.id, u.current_network_id, u.id).map(row => [row.member_code, row.name])),
       notifications: this.s
         .all(
           "SELECT id,body,created_at at FROM v2_notifications WHERE user_id=? ORDER BY rowid DESC LIMIT 30",
@@ -420,7 +437,7 @@ export class Bridge {
       !!previous &&
         previous.notifications?.at(-1)?.id !==
           state.notifications?.at(-1)?.id &&
-        state.notifications?.length > 0,
+        state.notifications?.length > 0 && !state.read_notifications.includes(state.notifications.at(-1)?.id),
     );
     this.fullSnapshots.delete(fresh.token);
     this.s.tx(() =>

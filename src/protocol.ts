@@ -5,6 +5,8 @@ export const Command = z
     id: z.string().regex(/^[a-f0-9]{32}$/),
     action: z.enum([
       "refresh",
+      "read_notifications",
+      "select_alias",
       "get_latest_app",
       "start",
       "join_network",

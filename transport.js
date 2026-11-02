@@ -118,7 +118,7 @@
     if (!initializing)
       for (const notification of current.notifications || [])
         listener?.({
-          payload: { type: "contact-notification", ...notification },
+          payload: { type: "contact-notification", ...notification, read: (current.read_notifications || []).includes(notification.id) },
         });
     if (initializing) finalInitial = update;
     else listener?.(update);
@@ -134,7 +134,7 @@
     if (finalInitial) {
       for (const notification of finalInitial.payload.notifications || [])
         listener({
-          payload: { type: "contact-notification", ...notification },
+          payload: { type: "contact-notification", ...notification, read: (finalInitial.payload.read_notifications || []).includes(notification.id) },
         });
       listener(finalInitial);
       finalInitial = null;

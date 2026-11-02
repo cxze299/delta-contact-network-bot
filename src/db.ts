@@ -21,6 +21,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS v2_app_updates(token TEXT NOT NULL REFERENCES xdc_instances(token) ON DELETE CASCADE,request_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',PRIMARY KEY(token,request_id));
       CREATE TABLE IF NOT EXISTS v2_runtime(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS v2_notifications(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS v2_notification_reads(user_id INTEGER NOT NULL REFERENCES users(id),notification_id TEXT NOT NULL REFERENCES v2_notifications(id) ON DELETE CASCADE,PRIMARY KEY(user_id,notification_id));
+      CREATE TABLE IF NOT EXISTS v2_name_choices(user_id INTEGER NOT NULL REFERENCES users(id),membership_id INTEGER NOT NULL REFERENCES memberships(id) ON DELETE CASCADE,name TEXT NOT NULL,PRIMARY KEY(user_id,membership_id));
       CREATE TABLE IF NOT EXISTS v2_aliases(actor_key TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id));`);
     if (!this.db.query("PRAGMA table_info(memberships)").all().some((column: any) => column.name === "display_names")) {
       this.db.exec("ALTER TABLE memberships ADD COLUMN display_names TEXT NOT NULL DEFAULT '[]'");

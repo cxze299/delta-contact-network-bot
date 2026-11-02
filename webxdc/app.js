@@ -118,7 +118,7 @@
     if (!initializing)
       for (const notification of current.notifications || [])
         listener?.({
-          payload: { type: "contact-notification", ...notification },
+          payload: { type: "contact-notification", ...notification, read: (current.read_notifications || []).includes(notification.id) },
         });
     if (initializing) finalInitial = update;
     else listener?.(update);
@@ -134,7 +134,7 @@
     if (finalInitial) {
       for (const notification of finalInitial.payload.notifications || [])
         listener({
-          payload: { type: "contact-notification", ...notification },
+          payload: { type: "contact-notification", ...notification, read: (finalInitial.payload.read_notifications || []).includes(notification.id) },
         });
       listener(finalInitial);
       finalInitial = null;
@@ -696,11 +696,14 @@ function renderFind(page) {
     const content = node("div", null, card);
     const heading = node("h3", null, content);
     const names = person.display_names?.length ? person.display_names : [person.nickname];
-    let nameIndex = 0;
-    const nameButton = button(heading, names[0], () => {
+    let nameIndex = Math.max(0, names.indexOf(state.alias_choices?.[person.member_code]));
+    card.querySelector(".avatar").textContent = Array.from(names[nameIndex])[0];
+    const nameButton = button(heading, names[nameIndex], () => {
       nameIndex = (nameIndex + 1) % names.length;
       nameButton.textContent = names[nameIndex];
       card.querySelector(".avatar").textContent = Array.from(names[nameIndex])[0];
+      state.alias_choices = {...state.alias_choices, [person.member_code]: names[nameIndex]};
+      savePreference("select_alias", {value: person.member_code, nickname: names[nameIndex], network: state.current_network});
     }, "friend-name");
     nameButton.setAttribute("aria-label", "点击切换昵称");
     nameButton.setAttribute("aria-live", "polite");
@@ -718,6 +721,22 @@ function renderFind(page) {
   if (directory.page > 0) button(paging, "上一页", () => { selected = null; send("directory", {page: directory.page - 1}); });
   if (directory.page > 0 || directory.has_more) node("span", "第 " + (directory.page + 1) + " 页", paging, "muted");
   if (directory.has_more) button(paging, "下一页", () => { selected = null; send("directory", {page: directory.page + 1}); });
+}
+let preferenceWrites = Promise.resolve();
+function savePreference(action, extra) {
+  // Serialize distinct clicks, without retries or blocking navigation.
+  preferenceWrites = preferenceWrites.then(async () => {
+    if (!bound || !ready) return;
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
+    const payload = await seal({token: window.CONTACT_CONFIG.token, id, action, ...extra});
+    await window.XdcTransportSend(payload, action);
+  }).catch(() => note("显示状态尚未同步，请检查连接。"));
+}
+function markNotificationsRead() {
+  const ids = notifications.filter(n => !(state.read_notifications || []).includes(n.id)).map(n => n.id);
+  notifications.forEach(n => { readNotifications[n.id] = true; });
+  try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {}
+  if (ids.length) savePreference("read_notifications", {value: JSON.stringify(ids.slice(-30)), network: state.current_network});
 }
 function unreadCount() { return notifications.filter(n => !readNotifications[n.id]).length; }
 function notificationTime(value) {
@@ -1112,7 +1131,7 @@ function renderNav() {
       if (tab === "我的" && name !== "我的") expandedSettings.clear();
       if (joinDraft) joinDraft = null;
       tab = name;
-      if (name === "消息") { notifications.forEach(n => { readNotifications[n.id] = true; }); try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {} }
+      if (name === "消息") markNotificationsRead();
       render(); scrollTop();
     }, tab === name ? "active" : "");
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1195,10 +1214,11 @@ fitViewport();
 if (waiting) markUnknown(); else render();
 if (window.XdcTransportListen && bound) {
   Promise.resolve(window.XdcTransportListen(update => {
-    const p = update.payload;
+    let p = update.payload;
     if (p?.type === "contact-notification" && typeof p.id === "string" && typeof p.body === "string") {
       if (!notifications.some(n => n.id === p.id)) notifications = [...notifications, {id: p.id, body: p.body, at: p.at || ""}].slice(-200);
-      if (tab === "消息") { readNotifications[p.id] = true; try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {} }
+      if (p.read) readNotifications[p.id] = true;
+      if (tab === "消息" && !readNotifications[p.id]) markNotificationsRead();
       if (tab === "消息") render(); else renderNav();
       return;
     }
@@ -1206,6 +1226,10 @@ if (window.XdcTransportListen && bound) {
     if (Number.isInteger(update.serial)) {
       if (update.serial <= lastStateSerial) return;
       lastStateSerial = update.serial;
+    }
+    if (waiting && p.receipt?.request_id !== waiting.id) {
+      const matchingReceipt = (p.recent_receipts || []).find(receipt => receipt.request_id === waiting.id);
+      if (matchingReceipt) p = {...p, receipt: matchingReceipt};
     }
     const firstState = !ready;
     const settled = (p.recent_receipts || []).filter(receipt => unresolved.some(item => item.id === receipt.request_id));
@@ -1221,6 +1245,7 @@ if (window.XdcTransportListen && bound) {
     const deletedProfile = Boolean(state.profile) && !p.profile;
     const unlockSucceeded = waiting && waiting.kind === "admin_unlock" && p.receipt?.request_id === waiting.id && p.receipt.ok;
     state = {...p, requests: p.requests || [], choices: p.choices || [], messages: unlockSucceeded ? [] : p.messages.length || changed ? p.messages : state.messages};
+    for (const id of p.read_notifications || []) readNotifications[id] = true;
     ready = true; if (changed) { selected = null; expandedMembers.clear(); expandedSettings.clear(); adminConfirm = null; if (deletedProfile) notifications = []; }
     const joinResult = joinDraft?.requestId && (p.recent_receipts || []).find(receipt => receipt.request_id === joinDraft.requestId);
     if (joinResult) {
@@ -1253,8 +1278,7 @@ if (window.XdcTransportListen && bound) {
       waiting = null; operationFeedback(null); rememberPending(); clearTimeout(waitTimer);
       if (showConfirmation) {
         tab = "消息"; selected = null;
-        notifications.forEach(n => { readNotifications[n.id] = true; });
-        try { localStorage.setItem("friend-notifications-read", JSON.stringify(readNotifications)); } catch {}
+        markNotificationsRead();
         scrollTop();
       }
       const error = (p.recent_receipts || []).find(receipt => receipt.request_id === p.receipt.request_id)?.error;

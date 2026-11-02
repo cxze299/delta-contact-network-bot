@@ -172,6 +172,10 @@ export class Service {
       } else
         this.s.run("UPDATE memberships SET user_id=? WHERE id=?", keeper, m.id);
     }
+    this.s.run("INSERT OR IGNORE INTO v2_notification_reads SELECT ?,notification_id FROM v2_notification_reads WHERE user_id=?", keeper, old);
+    this.s.run("DELETE FROM v2_notification_reads WHERE user_id=?", old);
+    this.s.run("INSERT OR IGNORE INTO v2_name_choices SELECT ?,membership_id,name FROM v2_name_choices WHERE user_id=?", keeper, old);
+    this.s.run("DELETE FROM v2_name_choices WHERE user_id=?", old);
     this.s.run("UPDATE v2_aliases SET user_id=? WHERE user_id=?", keeper, old);
     this.s.run(
       "UPDATE v2_instances SET user_id=? WHERE user_id=?",
@@ -838,6 +842,8 @@ export class Service {
         m.id,
       );
     }
+    this.s.run("DELETE FROM v2_notification_reads WHERE user_id=?", user.id);
+    this.s.run("DELETE FROM v2_name_choices WHERE user_id=? OR membership_id IN (SELECT id FROM memberships WHERE user_id=?)", user.id, user.id);
     this.s.run("DELETE FROM v2_notifications WHERE user_id=?", user.id);
     this.s.run("DELETE FROM xdc_admin_grants WHERE user_id=?", user.id);
     this.s.run("DELETE FROM web_admin_logins WHERE user_id=?", user.id);
