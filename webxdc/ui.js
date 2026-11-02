@@ -472,13 +472,16 @@ function renderFind(page) {
     button(page, "重新加载", () => send("directory", {page: 0}), "secondary");
     return;
   }
-  if (!directory.members.length) {
+  if (!directory.members.length && !state.profile) {
     const empty = emptyState(page, "暂时没有好友", "同网络中公开资料的成员会显示在这里。");
     button(empty, "我的资料", () => { tab = "我的"; render(); scrollTop(); }, "secondary local-navigation");
   }
   const list = node("div", null, page, "friends-list");
-  for (const person of directory.members) {
+  const people = state.profile ? [state.profile, ...directory.members.filter(person => person.member_code !== state.profile.member_code)] : directory.members;
+  for (const person of people) {
     const card = node("article", null, list, "person"); node("span", person.nickname.slice(0, 1), card, "avatar");
+    const isSelf = person.member_code === state.profile?.member_code;
+    if (isSelf) card.classList.add("person-self");
     const content = node("div", null, card);
     const heading = node("h3", null, content);
     const names = person.display_names?.length ? person.display_names : [person.nickname];
@@ -490,6 +493,7 @@ function renderFind(page) {
     }, "friend-name");
     nameButton.setAttribute("aria-label", "点击切换昵称");
     nameButton.setAttribute("aria-live", "polite");
+    if (isSelf) continue;
     const blocked = (state.blocked_members || []).some(m => m.member_code === person.member_code);
     const exchange = button(content, blocked ? "已屏蔽" : "交换名片", () => {
       if (!state.profile?.share_contact) {
