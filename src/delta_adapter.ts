@@ -342,7 +342,7 @@ export class DeltaAdapter implements Publisher {
           readFileSync(join(this.config.assets, name)),
         );
       entries["config.js"] = strToU8(
-        "window.CONTACT_CONFIG=" + JSON.stringify({ token, protocol: 3 }) + ";",
+        "window.CONTACT_CONFIG=" + JSON.stringify({ token, protocol: 3, ui_version: this.bridge.latestUiVersion }) + ";",
       );
       const file = join(folder, "好友助手.xdc");
       writeFileSync(file, zipSync(entries), { mode: 0o600 });

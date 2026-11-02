@@ -1,3 +1,4 @@
+import { uiVersion } from "./ui_release";
 import { Command, UserError, now, type Command as Request } from "./protocol";
 import { Service } from "./service";
 import { Admin } from "./xdc_admin";
@@ -15,12 +16,14 @@ export interface Publisher {
 }
 export class Bridge {
   readonly admin: Admin;
+  readonly latestUiVersion: string;
   private fullSnapshots = new Set<string>();
   constructor(
     readonly service: Service,
     readonly publisher: Publisher,
   ) {
     this.admin = new Admin(service);
+    this.latestUiVersion = uiVersion(service.config.assets);
   }
   get s() {
     return this.service.s;
@@ -326,6 +329,7 @@ export class Bridge {
       latest = results[0];
     return {
       type: "contact-state",
+      latest_ui_version: this.latestUiVersion,
       notifications: this.s
         .all(
           "SELECT id,body,created_at at FROM v2_notifications WHERE user_id=? ORDER BY rowid DESC LIMIT 30",

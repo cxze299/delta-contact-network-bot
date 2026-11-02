@@ -836,7 +836,26 @@ function renderAdmin(page) {
     node("p", "系统会生成加入码，请妥善保管。", card, "muted");
   }
 }
+let requestingLatest = false;
+async function getLatestApp() {
+  if (requestingLatest) return;
+  requestingLatest = true;
+  const control = $("get-latest"); control.disabled = true;
+  try {
+    if (typeof window.webxdc?.sendToChat !== "function") throw new Error("unsupported");
+    await window.webxdc.sendToChat({text: "小程序"});
+    note("发送后，打开机器人返回的最新小程序。");
+  } catch { note("请向好友助手发送任意消息，获取最新版。"); }
+  finally { requestingLatest = false; control.disabled = false; }
+}
 function render() {
+  const update = $("get-latest");
+  if (update) {
+    update.hidden = tab !== "好友" || !state.latest_ui_version || state.latest_ui_version === window.CONTACT_CONFIG?.ui_version;
+    update.onclick = getLatestApp;
+    document.querySelector(".topbar").classList.toggle("has-update", !update.hidden);
+  }
+
   document.body.classList.toggle("admin-mode", tab === "我的" && adminView);
   const current = state.networks.find(n => n.current); $("network").textContent = state.pending?.network_name ? "正在加入 · " + state.pending.network_name : current?.name || "好友助手";
   const page = $("page"), wizard = $("wizard");
