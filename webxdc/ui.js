@@ -684,7 +684,20 @@ function renderInvitations(parent, invitations, key, create, revoke) {
     node("p",invitation.active ? (invitation.expires_at.startsWith("9999") ? "长期有效" : new Date(invitation.expires_at).toLocaleDateString()+" 到期") : "已失效",item,"muted");
     if (!invitation.active) continue;
     const input=node("input",null,item);input.readOnly=true;input.value=invitation.link;input.setAttribute("aria-label","邀请链接");
-    button(item,"复制链接",async()=>{try{await navigator.clipboard.writeText(invitation.link);note("邀请链接已复制。");}catch{input.focus();input.select();note("请长按或使用复制快捷键复制链接。");}},"secondary local-navigation");
+    const copy=button(item,"复制链接",async()=>{
+      copy.disabled=true;
+      let copied=false;
+      try {await navigator.clipboard.writeText(invitation.link);copied=true;} catch {
+        input.focus();input.select();input.setSelectionRange(0,input.value.length);
+        try {copied=document.execCommand("copy");} catch {}
+      }
+      copy.textContent=copied ? "✓ 已复制" : "请长按复制";
+      copy.classList.toggle("copy-success",copied);
+      note(copied ? "邀请链接已复制，可以粘贴分享。" : "已选中链接，请长按复制。");
+      setTimeout(()=>{if(copy.isConnected){copy.textContent="复制链接";copy.classList.remove("copy-success");copy.disabled=false;}},3000);
+    },"secondary local-navigation");
+    const open=node("a","打开邀请页",item,"invite-open");open.href=invitation.link;open.target="_blank";open.rel="noopener noreferrer";
+
     button(item,"撤销邀请",()=>revoke(invitation.id),"danger");
   }
 }

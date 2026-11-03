@@ -97,3 +97,7 @@ docker compose exec -T contact-bot sh scripts/backup_db.sh
 受邀者打开链接，复制邀请码并添加/打开好友助手；打开小程序，在「加入新网络」粘贴邀请码或完整链接，填写昵称后确认加入。保留已有网络，重复加入不重复创建成员。未安装 Delta Chat 可从邀请页安装后重新打开链接；已添加机器人但没有收到新小程序时，发送任意消息获取。当前方案不假设 Delta Chat 可以把业务参数从联系人链接自动传入 Webxdc。
 
 邀请页面不显示成员名单或联系方式，不使用第三方统计。请勿公开传播邀请链接。
+
+### Synology HTTPS 邀请入口
+
+本次 NAS 部署使用 `https://mouss.synology.me:5001` 作为 `CONTACTBOT_PUBLIC_URL`，复用现有证书。`scripts/synology-invite.conf` 仅转发 `/join`、`/join.js`、`/api/public-invite` 到 `127.0.0.1:8787`，不开放管理后台。配置安装于 `/etc/nginx/conf.d/dsm.friend-assistant-invite.conf`，修改后先运行 `nginx -t` 再 reload；DSM 更新可能重建配置，更新后需要复查三个入口。其他主机使用自己的域名和 HTTPS 代理，勿直接复制此公网地址。8787 是 HTTP 后端端口，不支持直接使用 HTTPS。
