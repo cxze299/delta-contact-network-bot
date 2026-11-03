@@ -1,3 +1,4 @@
+import { NetworkInvites } from "./network_invites";
 import {
   existsSync,
   readFileSync,
@@ -278,6 +279,7 @@ export class Service {
     );
   }
   invalidate(memberId: number, status: string) {
+    this.s.run("UPDATE v2_network_invites SET revoked=1 WHERE (network_id,creator_id) IN (SELECT network_id,user_id FROM memberships WHERE id=?)", memberId);
     this.s.run(
       "UPDATE memberships SET status=?,updated_at=? WHERE id=?",
       status,
@@ -337,10 +339,11 @@ export class Service {
     const nickname = (c.nickname || "").trim();
     if (!nickname || nickname.length > 40)
       throw new UserError("昵称需要 1–40 字");
-    const n = this.s.one(
-      "SELECT * FROM networks WHERE join_code_hash=?",
-      hmac(this.config.secret, (c.value || "").trim()),
-    );
+    const invitations = new NetworkInvites(this);
+    const input = (c.value || "").trim();
+    const invitation = invitations.token(input) ? invitations.find(input) : null;
+    const n = invitation ? this.s.one("SELECT * FROM networks WHERE id=?", invitation.network_id) : this.s.one(
+      "SELECT * FROM networks WHERE join_code_hash=?", hmac(this.config.secret, input));
     if (!n)
       throw new UserError(
         "加入码不正确。请填写管理员提供的完整加入码，网络名称不能用于加入。",
@@ -361,6 +364,7 @@ export class Service {
       user.id,
     );
     if (!previous || previous.status !== "active") {
+      if (invitation) this.s.run("UPDATE v2_network_invites SET uses=uses+1 WHERE id=?", invitation.id);
       if (previous)
         this.s.run(
           "UPDATE memberships SET nickname=?,display_names='[]',bio='',discoverable=?,accepts_requests=?,share_contact=?,share_version=share_version+1,status='active',role='member',updated_at=? WHERE id=?",
@@ -842,6 +846,7 @@ export class Service {
         m.id,
       );
     }
+    this.s.run("UPDATE v2_network_invites SET revoked=1 WHERE creator_id=?",user.id);
     this.s.run("DELETE FROM v2_notification_reads WHERE user_id=?", user.id);
     this.s.run("DELETE FROM v2_name_choices WHERE user_id=? OR membership_id IN (SELECT id FROM memberships WHERE user_id=?)", user.id, user.id);
     this.s.run("DELETE FROM v2_notifications WHERE user_id=?", user.id);

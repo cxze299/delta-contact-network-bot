@@ -1,3 +1,4 @@
+import { NetworkInvites } from "./network_invites";
 import { Service, pid } from "./service";
 import { type Row } from "./db";
 import { hmac, hash, random, equal } from "./crypto";
@@ -136,6 +137,18 @@ export class Admin {
       throw new UserError("请确认操作");
     let result = "操作已完成。",
       target = "";
+    if (op === "invite_create") {
+      if (!n || n.status !== "active" || !n.join_enabled) throw new UserError("该网络目前已停止加入");
+      this.service.rate(u.actor_key, "invite_create", 5, 3600);
+      new NetworkInvites(this.service).create(network!,u.id,data.duration || "7");
+      this.service.audit(u, network, "invite_create");
+      return "邀请链接已生成。";
+    }
+    if (op === "invite_revoke") {
+      this.s.run("UPDATE v2_network_invites SET revoked=1 WHERE network_id=? AND id=?",network,Number(data.invite_id));
+      this.service.audit(u, network, "invite_revoke", String(data.invite_id));
+      return "邀请已撤销。";
+    }
     if (op === "create") {
       const name = (data.name || "").trim();
       if (!name || name.length > 60)
@@ -431,6 +444,7 @@ export class Admin {
       deliveries: [],
     };
     if (current) {
+      data.invitations = new NetworkInvites(this.service).list(current);
       const network = this.s.one("SELECT join_code_ciphertext FROM networks WHERE id=?", current);
       data.join_code = network?.join_code_ciphertext ? this.service.readCode(network.join_code_ciphertext) : "";
       data.reports = this.s.all(

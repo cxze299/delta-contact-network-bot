@@ -1,3 +1,4 @@
+import { NetworkInvites } from "./network_invites";
 import { uiVersion } from "./ui_release";
 import { Command, UserError, now, type Command as Request } from "./protocol";
 import { Service } from "./service";
@@ -94,6 +95,24 @@ export class Bridge {
           throw new UserError("当前网络已变化，请查看最新状态后操作");
         const value = c.value || "";
         switch (c.action) {
+          case "network_invite_create": {
+            const me = this.service.member(user);
+            const network = this.s.one("SELECT join_enabled FROM networks WHERE id=?",me.network_id);
+            if (!network?.join_enabled) throw new UserError("该网络目前已停止加入");
+            this.service.rate(user.actor_key,"invite_create",5,3600);
+            new NetworkInvites(this.service).create(me.network_id,user.id,value || "7");
+            this.service.audit(user,me.network_id,"invite_create");
+            message = "邀请链接已生成。";
+            break;
+          }
+          case "network_invite_revoke": {
+            const me = this.service.member(user);
+            const result = this.s.run("UPDATE v2_network_invites SET revoked=1 WHERE id=? AND network_id=? AND creator_id=?",Number(value),me.network_id,user.id);
+            if (!result.changes) throw new UserError("只能撤销自己在此网络生成的邀请");
+            this.service.audit(user,me.network_id,"invite_revoke",value);
+            message = "邀请已撤销。";
+            break;
+          }
           case "read_notifications": {
             const ids = JSON.parse(value);
             if (!Array.isArray(ids) || ids.length > 30 || ids.some(id => typeof id !== "string")) throw new UserError("无效的已读记录");
@@ -358,6 +377,7 @@ export class Bridge {
           u.id,
         )
         .reverse(),
+      invitations: profile ? new NetworkInvites(this.service).list(u.current_network_id,u.id) : [],
       profile,
       communication_address: profile ? u.address : "",
       admin_role: this.admin.system(u) ? "system" : null,

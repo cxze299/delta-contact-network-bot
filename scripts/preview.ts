@@ -5,6 +5,7 @@ import { encrypt } from "../src/crypto";
 const f = fixture(),
   a = f.create("原网络"),
   b = f.create("第二网络");
+f.config.publicUrl = "http://localhost:18794";
 f.call("join_network", {
   value: a.code,
   nickname: "测试成员",

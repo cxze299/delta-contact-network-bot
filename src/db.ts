@@ -19,6 +19,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS v2_jobs(id INTEGER PRIMARY KEY,request_id INTEGER REFERENCES contact_requests(id),recipient INTEGER NOT NULL REFERENCES users(id),source INTEGER NOT NULL REFERENCES users(id),status TEXT NOT NULL DEFAULT 'pending',core_message_id INTEGER,started_at TEXT,UNIQUE(request_id,recipient));
       CREATE TABLE IF NOT EXISTS v2_tombstones(actor_key TEXT PRIMARY KEY,deleted_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS v2_app_updates(token TEXT NOT NULL REFERENCES xdc_instances(token) ON DELETE CASCADE,request_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',PRIMARY KEY(token,request_id));
+      CREATE TABLE IF NOT EXISTS v2_network_invites(id INTEGER PRIMARY KEY,network_id INTEGER NOT NULL REFERENCES networks(id),creator_id INTEGER NOT NULL REFERENCES users(id),token_hash TEXT NOT NULL UNIQUE,token_cipher TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,uses INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS v2_runtime(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS v2_notifications(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS v2_native_notices(notification_id TEXT PRIMARY KEY REFERENCES v2_notifications(id) ON DELETE CASCADE);

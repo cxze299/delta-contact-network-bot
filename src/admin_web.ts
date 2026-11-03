@@ -1,3 +1,5 @@
+import { invitePage, inviteScript } from "./invite_page";
+import { NetworkInvites } from "./network_invites";
 import { invitationLink } from "./invite";
 import { Hono } from "hono";
 import { readFileSync } from "node:fs";
@@ -91,7 +93,7 @@ export function createAdmin(
       "Content-Security-Policy",
       "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
     );
-    if (["/health", "/api/health"].includes(c.req.path)) return next();
+    if (["/health", "/api/health", "/join", "/join.js", "/api/public-invite"].includes(c.req.path)) return next();
     const u = authenticate(c.req.header("authorization") || "");
     if (!u) {
       c.header("WWW-Authenticate", 'Basic realm="ContactBot Local Admin"');
@@ -99,6 +101,20 @@ export function createAdmin(
     }
     c.set("actor", u);
     await next();
+  });
+  app.get("/join", c => c.html(invitePage));
+  app.get("/join.js", c => c.body(inviteScript,200,{"Content-Type":"application/javascript; charset=utf-8"}));
+  app.post("/api/public-invite", async c => {
+    try {
+      service.rate("public-invitation", "preview", 120, 60);
+      const text = await c.req.text();
+      if (text.length > 300) return c.json({error:"邀请无效"},400);
+      const {token} = JSON.parse(text);
+      if (typeof token !== "string") return c.json({error:"邀请无效"},400);
+      const row = new NetworkInvites(service).find(token);
+      if (!invite) return c.json({error:"机器人暂不可用，请稍后再试"},503);
+      return c.json({name:row.name,bot:invitationLink(await invite())});
+    } catch { return c.json({error:"邀请已失效或暂不可用，请联系管理员"},400); }
   });
   app.get("/api/invite", async (c) => {
     const u = c.get("actor");

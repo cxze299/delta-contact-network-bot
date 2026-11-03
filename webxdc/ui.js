@@ -230,8 +230,8 @@ function renderJoin(page) {
   node("h1", "加入新网络", page);
   const f = node("form", null, page, "card onboarding");
   const codeLabel = node("label", "网络加入码", f);
-  const code = node("input", null, codeLabel); code.value = draft.code; code.required = true; code.maxLength = 200;
-    code.placeholder = "粘贴管理员提供的加入码（不是网络名称）"; code.autocomplete = "off"; code.autocapitalize = "none"; code.spellcheck = false;
+  const code = node("input", null, codeLabel); code.value = draft.code; code.required = true; code.maxLength = 2000;
+    code.placeholder = "粘贴加入码、邀请码或邀请链接（不是网络名称）"; code.autocomplete = "off"; code.autocapitalize = "none"; code.spellcheck = false;
     code.setAttribute("autocorrect", "off"); code.oninput = () => { draft.code = code.value; };
   const label = node("label", "在此网络使用的昵称", f);
   const nickname = node("input", null, label); nickname.value = draft.nickname; nickname.required = true; nickname.maxLength = 40;
@@ -325,7 +325,7 @@ function renderAdminConfirm() {
 function recoveryForm(parent) {
   const f = node("form", null, parent);
   const codeLabel = node("label", "网络加入码", f);
-  const code = node("input", null, codeLabel); code.type = "password"; code.autocomplete = "off"; code.maxLength = 200; code.required = true; code.value = recoveryDraft.joinCode;
+  const code = node("input", null, codeLabel); code.type = "password"; code.autocomplete = "off"; code.maxLength = 2000; code.required = true; code.value = recoveryDraft.joinCode;
   const nameLabel = node("label", "原来的昵称", f);
   const nickname = node("input", null, nameLabel); nickname.maxLength = 40; nickname.required = true; nickname.value = recoveryDraft.nickname;
   code.addEventListener("input", () => { recoveryDraft.joinCode = code.value; });
@@ -388,7 +388,7 @@ function renderWizard() {
     node("p", p.action === "delete" ? "这会清除个人资料并使相关未完成申请失效。已交付的信息无法收回。" : p.action === "leave" ? "退出后将从当前网络移除，尚未完成的申请会失效。" : "请确认要执行此操作。", w);
     button(w, p.action === "delete" ? "再次确认删除我的数据" : "确认执行", () => reply("1"), "danger");
   } else {
-    const labels = {guide_join_code: "管理员提供的加入码", guide_nickname: "你希望大家怎么称呼你？", guide_edit_nickname: "新的昵称", guide_edit_bio: "个人介绍", guide_accept_contact: "愿意分享的 Delta Chat 地址", guide_admin_create_code: "按机器人提示设置加入码", guide_admin_rotate_code: "新加入码"};
+    const labels = {guide_join_code: "加入码、邀请码或邀请链接", guide_nickname: "你希望大家怎么称呼你？", guide_edit_nickname: "新的昵称", guide_edit_bio: "个人介绍", guide_accept_contact: "愿意分享的 Delta Chat 地址", guide_admin_create_code: "按机器人提示设置加入码", guide_admin_rotate_code: "新加入码"};
     form(w, labels[p.action] || "按机器人回执填写", value => reply(value), {max: 500});
   }
   const cancel = button(w, waiting ? "返回" : "取消", () => {
@@ -652,6 +652,12 @@ function renderMe(page) {
   }
   const networks = settingsDisclosure(networkGroup, "我的网络");
   for (const n of state.networks) button(networks, (n.current ? "当前 · " : "切换 · ") + n.name, () => command("切换网络", n.public_id));
+  if (state.profile) renderInvitations(networks, state.invitations || [], String(state.current_network), duration => send("network_invite_create", {value:duration}), id => {
+    const dialog=openModal("invite-revoke",String(id),"撤销邀请？");
+    node("p","撤销后，此链接将无法继续加入网络。",dialog,"muted");
+    button(dialog,"撤销",()=>{closeModal();send("network_invite_revoke",{value:String(id)});},"danger");
+    const cancel=button(dialog,"取消",()=>closeModal(),"secondary");finishModal(dialog,cancel);
+  });
   button(networks, "加入新网络", () => openJoin(), "primary local-navigation");
   if (state.networks.some(n => n.current)) button(networks, "退出网络", () => command("退出网络"), "danger");
   button(networks, "管理网络", () => {
@@ -660,6 +666,27 @@ function renderMe(page) {
     // not need another network round trip. A new instance needs a context.
     if (!state.admin?.unlocked || !state.admin?.system || (state.admin.networks?.length && state.admin.current == null)) send("admin_open");
   }, "admin-entry");
+}
+function renderInvitations(parent, invitations, key, create, revoke) {
+  const section = settingsDisclosure(parent, "邀请链接");
+  let duration="7";
+  const choices=node("div",null,section,"segments");
+  for (const [value,label] of [["1","1 天"],["7","7 天"],["forever","长期有效"]]) {
+    const control=button(choices,label,()=>{
+      duration=value;
+      [...choices.children].forEach(b=>{b.classList.toggle("selected",b===control);b.setAttribute("aria-pressed",String(b===control));});
+    },value===duration ? "selected local-navigation" : "local-navigation");
+    control.setAttribute("aria-pressed",String(value===duration));
+  }
+  button(section,"生成邀请链接",()=>create(duration),"secondary");
+  for (const invitation of invitations) {
+    const item=node("div",null,section,"card");
+    node("p",invitation.active ? (invitation.expires_at.startsWith("9999") ? "长期有效" : new Date(invitation.expires_at).toLocaleDateString()+" 到期") : "已失效",item,"muted");
+    if (!invitation.active) continue;
+    const input=node("input",null,item);input.readOnly=true;input.value=invitation.link;input.setAttribute("aria-label","邀请链接");
+    button(item,"复制链接",async()=>{try{await navigator.clipboard.writeText(invitation.link);note("邀请链接已复制。");}catch{input.focus();input.select();note("请长按或使用复制快捷键复制链接。");}},"secondary local-navigation");
+    button(item,"撤销邀请",()=>revoke(invitation.id),"danger");
+  }
 }
 function adminOperation(operation, data = {}, question = "") {
   if (question) {
@@ -789,6 +816,7 @@ function renderAdmin(page) {
     const codeRow = node("div", null, card, "network-setting-row");
     node("span", "加入码", codeRow);
     node("span", data.join_code || "暂不可用", codeRow, "network-join-code");
+    renderInvitations(card, data.invitations || [], String(current.id), duration => adminOperation("invite_create", {duration}), id => adminOperation("invite_revoke", {invite_id: String(id)}, "撤销后，该邀请链接将立即失效。"));
     actionRow("更换加入码", () => {
       const dialog = openModal("network-code", String(current.id), "更换加入码");
       node("p", "保存后旧加入码立即失效，现有成员不受影响。", dialog, "muted");

@@ -10,6 +10,7 @@ export function configuration(env: NodeJS.ProcessEnv = process.env) {
   if (webPassword.length < 12)
     throw Error("Web administrator password required");
   return {
+    publicUrl: (env.CONTACTBOT_PUBLIC_URL || "").replace(/\/$/, ""),
     secret,
     verifier,
     webPassword,
