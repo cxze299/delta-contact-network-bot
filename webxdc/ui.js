@@ -2,6 +2,7 @@
 // Identity and permissions come from Core and the server, never selfAddr.
 const $ = id => document.getElementById(id);
 let state = {networks: [], pending: null, messages: [], requests: [], choices: [], profile: null, current_network: null};
+let dismissedInvitedNetwork = false;
 let tab = "好友", filter = "待处理", preparing = false, ready = false, selected = null;
 let deferredRemoteRender = false;
 let adminView = false, adminSection = "网络", adminConfirm = null, adminUnlocking = false;
@@ -220,16 +221,41 @@ function privacy(parent) {
   node("p", "机器人服务端可以处理你发送的数据。只收集昵称、介绍及必要账号标识；目录不展示联系方式。", parent, "muted");
   node("p", "联系方式仅按你的授权分享；交付后无法从接收方设备收回。小应用更新留存在聊天历史中，删除服务器数据不会自动删除设备上的历史，请自行删除旧的小应用消息。", parent, "muted");
 }
-function openJoin() {
-  joinDraft = {code: "", nickname: state.profile?.nickname || "", discoverable: true, accepts: true, requestId: null};
+async function checkClipboardInvite() {
+  try {
+    if (!navigator.clipboard?.readText) return null;
+    const text = (await navigator.clipboard.readText()).trim();
+    if (!text) return null;
+    const tokenMatch = text.match(/INV-[A-Za-z0-9_-]{32}/);
+    if (tokenMatch) return tokenMatch[0];
+    const urlMatch = text.match(/https?:\/\/[^\s]+/i);
+    if (urlMatch) {
+      try {
+        const u = new URL(urlMatch[0]);
+        const hashParams = new URLSearchParams(u.hash.replace(/^#/, ""));
+        const token = hashParams.get("invite");
+        if (token && /^INV-[A-Za-z0-9_-]{32}$/.test(token)) return token;
+        const queryToken = u.searchParams.get("invite");
+        if (queryToken && /^INV-[A-Za-z0-9_-]{32}$/.test(queryToken)) return queryToken;
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+function openJoin(initialCode = "", networkName = "") {
+  joinDraft = {code: initialCode, network_name: networkName, nickname: state.profile?.nickname || "", discoverable: true, accepts: true, requestId: null};
   dismissedStep = state.pending?.token || null;
   adminView = false; adminConfirm = null; closeModal(); render(); scrollTop();
 }
 function renderJoin(page) {
   const draft = joinDraft;
-  button(page, "‹ 返回", () => { joinDraft = null; tab = state.profile ? "我的" : "好友"; render(); scrollTop(); }, "quiet local-navigation");
-  node("h1", "加入新网络", page);
+  button(page, "‹ 返回", () => { joinDraft = null; dismissedInvitedNetwork = true; tab = state.profile ? "我的" : "好友"; render(); scrollTop(); }, "quiet local-navigation");
+  node("h1", draft.network_name ? "加入 " + draft.network_name : "加入新网络", page);
   const f = node("form", null, page, "card onboarding");
+  if (draft.network_name) {
+    node("p", "已为你选中邀请网络：" + draft.network_name, f, "invite-preset-banner");
+    button(f,"改用其他邀请",()=>{draft.code="";draft.network_name="";dismissedInvitedNetwork=true;send("dismiss_invited_network");render();},"secondary");
+  }
   const codeLabel = node("label", "网络加入码", f);
   const code = node("input", null, codeLabel); code.value = draft.code; code.required = true; code.maxLength = 2000;
     code.placeholder = "粘贴加入码、邀请码或邀请链接（不是网络名称）"; code.autocomplete = "off"; code.autocapitalize = "none"; code.spellcheck = false;
@@ -253,6 +279,7 @@ function renderJoin(page) {
       setTimeout(() => {if(paste.isConnected) paste.textContent = "粘贴邀请码";},3000);
     }
   }, "secondary local-navigation");
+  if (draft.network_name) {codeLabel.hidden=true;code.required=false;paste.hidden=true;}
   const label = node("label", "在此网络使用的昵称", f);
   const nickname = node("input", null, label); nickname.value = draft.nickname; nickname.required = true; nickname.maxLength = 40;
   nickname.oninput = () => { draft.nickname = nickname.value; };
@@ -956,6 +983,9 @@ function render() {
   renderWizard(); page.replaceChildren();
   const setup = !joinDraft && bound && ready && dismissedStep !== state.pending?.token && ["guide_join_code", "guide_nickname", "join"].includes(state.pending?.action);
   page.hidden = setup;
+  if (ready && state.invited_network && !joinDraft && !dismissedInvitedNetwork && !state.profile) {
+    joinDraft={code:state.invited_network.code,network_name:state.invited_network.name,nickname:"",discoverable:true,accepts:true,requestId:null};
+  }
   if (joinDraft) {
     renderJoin(page);
   } else if (setup) {
@@ -970,7 +1000,7 @@ function render() {
   } else if (!state.profile && !["我的", "消息"].includes(tab)) {
     node("h1", "加入你的网络", page);
     const card = node("section", null, page, "card onboarding");
-    button(card, "加入网络", () => openJoin(), "primary local-navigation");
+    button(card, "加入网络", async () => openJoin(await checkClipboardInvite() || ""), "primary local-navigation");
     node("p", "加入码请勿公开传播。", card, "setup-notice");
   } else if (tab === "我的" && adminView) renderAdmin(page);
   else if (state.profile && !state.profile.share_contact && tab === "好友") {
