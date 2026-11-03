@@ -1,3 +1,4 @@
+import { encrypt, random } from "../src/crypto";
 import { expect, test } from "bun:test";
 import { fixture } from "./fixture";
 test("account preferences persist to fresh instances and reject foreign notifications and aliases",()=>{
@@ -15,9 +16,10 @@ test("account preferences persist to fresh instances and reject foreign notifica
  const fresh=f.bridge.snapshot(f.bridge.instance(1,999)!);
  expect(fresh.read_notifications).toEqual(["notice-1"]);
  expect(fresh.alias_choices[profile.member_code]).toBe("Two");
- f.call("join_network",{value:b.code,nickname:"Elsewhere",consent:true,use_current_account:true,discoverable:true,accepts_requests:true});
+ const latestCall=(action:string,extra:any)=>{const instance=f.bridge.instance(1,999)!;f.bridge.handle(instance,encrypt({token,id:crypto.randomUUID().replaceAll("-",""),action,network:f.service.user(f.user.id).current_network_id,...extra},token,"contact-action-v2"));return f.bridge.snapshot(instance);};
+ latestCall("join_network",{value:b.code,nickname:"Elsewhere",consent:true,use_current_account:true,discoverable:true,accepts_requests:true});
  expect(f.bridge.snapshot(f.instance()).alias_choices).toEqual({});
- expect(f.call("select_alias",{value:profile.member_code,nickname:"One"}).receipt.ok).toBe(0);
+ expect(latestCall("select_alias",{value:profile.member_code,nickname:"One"}).receipt.ok).toBe(0);
  f.service.erase(f.service.user(f.user.id));
  expect(f.s.one("SELECT count(*) n FROM v2_name_choices")?.n).toBe(0);
  expect(f.s.one("SELECT count(*) n FROM v2_notification_reads")?.n).toBe(0);

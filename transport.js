@@ -6,6 +6,8 @@
   const originalListen = api.setUpdateListener.bind(api),
     originalSend = api.sendUpdate.bind(api);
   let channel = null,
+    retired = false,
+    heartbeat = null,
     active = false,
     listener = null,
     current = null,
@@ -15,7 +17,7 @@
   const connectionStatus = () => {
     const offline = window.navigator?.onLine === false;
     const live = !offline && lastRealtime > 0 && Date.now() - lastRealtime < 45000;
-    const label = offline ? "离线" : live ? "实时在线" : synced ? "消息连接" : "连接中";
+    const label = retired ? "旧版已停用" : offline ? "离线" : live ? "实时在线" : synced ? "消息连接" : "连接中";
     for (const el of window.document?.querySelectorAll(".connection-status") || []) {
       el.textContent = label; el.dataset.live = String(live);
     }
@@ -111,6 +113,14 @@
       await requestSnapshot(packet.base);
       return;
     }
+    retired = current.instance_current === false;
+    if (retired) {
+      active = false; lastRealtime = 0;
+      if (heartbeat) clearInterval(heartbeat);
+      try { channel?.leave(); } catch {}
+      channel = null;
+    }
+    connectionStatus();
     version = packet.version;
     sequence = packet.sequence;
     resyncFor = null;
@@ -139,7 +149,7 @@
       listener(finalInitial);
       finalInitial = null;
     }
-    if (typeof api.joinRealtimeChannel === "function") {
+    if (!retired && typeof api.joinRealtimeChannel === "function") {
       try {
         channel = api.joinRealtimeChannel();
         channel.setListener((data) => {
@@ -151,7 +161,7 @@
           encoder.encode(JSON.stringify({ type: "contact-ping-v3" })),
         );
         let lastPing = Date.now();
-        const heartbeat = setInterval(() => {
+        heartbeat = setInterval(() => {
           connectionStatus();
           if (active && Date.now() - lastRealtime >= 45000) active = false;
           if (!channel) return;

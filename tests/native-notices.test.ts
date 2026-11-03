@@ -1,3 +1,4 @@
+import { encrypt } from "../src/crypto";
 import { expect, test } from "bun:test";
 import { fixture } from "./fixture";
 test("native notification is claimed once even after an ambiguous publish",async()=>{
@@ -25,7 +26,7 @@ test("old app instances stay silent and already read notices stay silent",async(
  await f.bridge.publish(f.instance());expect(f.published.at(-1)[3]).toBe(false);
  await f.bridge.publish(latest);expect(f.published.at(-1)[3]).toBe(true);
  f.s.run("INSERT INTO v2_notifications VALUES(?,?,?,?)","read",f.user.id,"read",new Date().toISOString());
- f.call("read_notifications",{value:JSON.stringify(["read"])});
+ f.bridge.handle(latest,encrypt({token,id:"a".repeat(32),action:"read_notifications",value:JSON.stringify(["read"])},token,"contact-action-v2"));
  await f.bridge.publish(latest);expect(f.published.at(-1)[3]).toBe(false);
  }finally{f.s.close();}
 });

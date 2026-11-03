@@ -34,7 +34,7 @@ export class DeltaAdapter implements Publisher {
   private queued = 0;
   private maintenance = 0;
   private timer?: ReturnType<typeof setInterval>;
-  private live = new Set<string>();
+  private live = new Map<string, number>();
   constructor(
     readonly service: Service,
     readonly config: Config,
@@ -51,7 +51,10 @@ export class DeltaAdapter implements Publisher {
       });
   }
   isLive(token: string) {
-    return this.live.has(token);
+    const at = this.live.get(token);
+    if (at !== undefined && Date.now() - at < 45000) return true;
+    this.live.delete(token);
+    return false;
   }
   async start() {
     mkdirSync(this.config.accounts, { recursive: true, mode: 0o700 });
@@ -96,7 +99,7 @@ export class DeltaAdapter implements Publisher {
     this.enqueue(async () => {
       await this.discoverEncryptedChats();
       for (const row of this.service.s.all(
-        "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE x.account_id=?",
+        "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE x.account_id=? AND x.rowid=(SELECT MAX(xx.rowid) FROM xdc_instances xx JOIN v2_instances vv ON vv.token=xx.token WHERE vv.user_id=v.user_id)",
         this.account,
       ))
         await this.consume(row);
@@ -109,7 +112,7 @@ export class DeltaAdapter implements Publisher {
         if (++this.maintenance % 4 === 0) {
           await this.discoverEncryptedChats();
           for (const i of this.service.s.all(
-            "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE x.account_id=?",
+            "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE x.account_id=? AND x.rowid=(SELECT MAX(xx.rowid) FROM xdc_instances xx JOIN v2_instances vv ON vv.token=xx.token WHERE vv.user_id=v.user_id)",
             this.account,
           ))
             await this.consume(i);
@@ -138,6 +141,7 @@ export class DeltaAdapter implements Publisher {
               const i = this.bridge.instance(this.account, e.msgId);
               if (i) {
                 if (await this.consume(i)) {
+                  await this.bridge.publish(i, false, true);
                   await this.deliver();
                   await this.bridge.publishAll();
                 }
@@ -154,7 +158,12 @@ export class DeltaAdapter implements Publisher {
                 return;
               }
               if (data?.type === "contact-ping-v3") {
-                this.live.add(i.token);
+                if (!this.bridge.isLatest(i)) {
+                  this.live.delete(i.token);
+                  await this.bridge.publish(i, false, true);
+                  return;
+                }
+                this.live.set(i.token, Date.now());
                 await this.rpc.sendWebxdcRealtimeAdvertisement(
                   this.account,
                   e.msgId,
@@ -163,7 +172,7 @@ export class DeltaAdapter implements Publisher {
                 return;
               }
               if (this.bridge.handle(i, data)) {
-                this.live.add(i.token);
+                this.live.set(i.token, Date.now());
                 await this.bridge.publish(i, false, true);
                 await this.deliver();
                 await this.bridge.publishAll(undefined, i.token);
@@ -174,14 +183,15 @@ export class DeltaAdapter implements Publisher {
               const i = this.bridge.instance(this.account, e.msgId);
               if (
                 i &&
-                !this.live.has(i.token) &&
+                this.bridge.isLatest(i) &&
+                !this.isLive(i.token) &&
                 (await this.verifyInstance(i))
               ) {
                 await this.rpc.sendWebxdcRealtimeAdvertisement(
                   this.account,
                   e.msgId,
                 );
-                this.live.add(i.token);
+                this.live.set(i.token, Date.now());
                 await this.bridge.publish(i, false, true);
               }
             });
@@ -374,6 +384,12 @@ export class DeltaAdapter implements Publisher {
       const i = this.bridge.instance(this.account, messageId)!;
       await this.bridge.publish(i, true);
       await this.rpc.sendWebxdcRealtimeAdvertisement(this.account, messageId);
+      for (const old of this.service.s.all("SELECT x.*,v.user_id,v.snapshot FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE v.user_id=? AND x.token<>?", user.id, token)) {
+        this.live.delete(old.token);
+        if (old.snapshot && JSON.parse(old.snapshot).instance_current === false) continue;
+        try { await this.bridge.publish(old, false, true); } catch { /* Old clients learn retirement on their next request. */ }
+      }
+
     } finally {
       rmSync(folder, { recursive: true, force: true });
     }

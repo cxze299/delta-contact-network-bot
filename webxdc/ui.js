@@ -126,6 +126,7 @@ async function resend() {
 }
 async function send(action, extra = {}) {
   if (!window.webxdc) { note("请在 Delta Chat 内打开好友助手小应用。"); return; }
+  if (state.instance_current === false && !["refresh","start","get_latest_app"].includes(action)) { note("此小程序已失效，请获取新版。"); return; }
   if (preparing) return;
   if (!bound) {
     try { await window.webxdc.sendToChat({text: "小程序"}); }
@@ -548,7 +549,7 @@ let preferenceWrites = Promise.resolve();
 function savePreference(action, extra) {
   // Serialize distinct clicks, without retries or blocking navigation.
   preferenceWrites = preferenceWrites.then(async () => {
-    if (!bound || !ready) return;
+    if (!bound || !ready || state.instance_current === false) return;
     const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
     const payload = await seal({token: window.CONTACT_CONFIG.token, id, action, ...extra});
     await window.XdcTransportSend(payload, action);
@@ -936,7 +937,7 @@ function getLatestApp() {
 function render() {
   const update = $("get-latest");
   if (update) {
-    update.hidden = tab !== "好友" || !state.latest_ui_version || state.latest_ui_version === window.CONTACT_CONFIG?.ui_version;
+    update.hidden = state.instance_current !== false && (tab !== "好友" || !state.latest_ui_version || state.latest_ui_version === window.CONTACT_CONFIG?.ui_version);
     update.onclick = getLatestApp;
     document.querySelector(".topbar").classList.toggle("has-update", !update.hidden);
   }
@@ -944,6 +945,13 @@ function render() {
   document.body.classList.toggle("admin-mode", tab === "我的" && adminView);
   const current = state.networks.find(n => n.current); $("network").textContent = state.pending?.network_name ? "正在加入 · " + state.pending.network_name : current?.name || "好友助手";
   const page = $("page"), wizard = $("wizard");
+  if (state.instance_current === false) {
+    closeModal(false); wizard.replaceChildren(); page.hidden=false; page.replaceChildren(); $("nav").replaceChildren();
+    node("h1","请打开最新小程序",page);
+    node("p","此实例已停用，请打开聊天中最新的小程序，或获取新版。",page,"muted");
+    button(page,"获取新版",()=>send("get_latest_app"),"primary");
+    return;
+  }
   if (wizard.parentElement === page) page.parentElement.insertBefore(wizard, page);
   renderWizard(); page.replaceChildren();
   const setup = !joinDraft && bound && ready && dismissedStep !== state.pending?.token && ["guide_join_code", "guide_nickname", "join"].includes(state.pending?.action);

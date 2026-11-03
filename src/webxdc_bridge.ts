@@ -36,6 +36,9 @@ export class Bridge {
       message,
     );
   }
+  isLatest(instance: Row): boolean {
+    return this.s.one("SELECT x.token FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE v.user_id=? ORDER BY x.rowid DESC LIMIT 1",instance.user_id)?.token === instance.token;
+  }
   handle(instance: Row, payload: unknown, serial?: number): boolean {
     let c: Request;
     try {
@@ -85,6 +88,7 @@ export class Bridge {
       this.s.db.exec("SAVEPOINT action");
       try {
         if (error) throw new UserError(error);
+        if (!this.isLatest(instance) && !["refresh","start","get_latest_app"].includes(c.action)) throw new UserError("此小程序已失效，请获取新版");
         this.service.expire();
         if (
           !["refresh", "read_notifications", "get_latest_app", "join_network", "cancel_join", "start"].includes(
@@ -369,6 +373,7 @@ export class Bridge {
     return {
       type: "contact-state",
       latest_ui_version: this.latestUiVersion,
+      instance_current: this.isLatest(instance),
       read_notifications: this.s.all("SELECT notification_id FROM v2_notification_reads WHERE user_id=?", u.id).map(row => row.notification_id),
       alias_choices: Object.fromEntries(this.s.all("SELECT m.member_code,c.name FROM v2_name_choices c JOIN memberships m ON m.id=c.membership_id WHERE c.user_id=? AND m.network_id=? AND m.status='active' AND (m.discoverable=1 OR m.user_id=?)", u.id, u.current_network_id, u.id).map(row => [row.member_code, row.name])),
       notifications: this.s
@@ -502,9 +507,16 @@ export class Bridge {
     );
   }
   async publishAll(forceToken?: string, realtimeToken?: string) {
-    for (const row of this.s.all(
-      "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token",
-    )) {
+    const rows = this.s.all(
+      "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token ORDER BY x.rowid DESC",
+    );
+    const newest = new Set<number>();
+    const targets = rows.filter(row => {
+      const first = !newest.has(row.user_id); newest.add(row.user_id);
+      return first || row.token === forceToken;
+    });
+    targets.sort((a,b) => Number(b.token === realtimeToken || !!this.publisher.isLive?.(b.token)) - Number(a.token === realtimeToken || !!this.publisher.isLive?.(a.token)));
+    for (const row of targets) {
       try {
         await this.publish(
           row,
