@@ -430,6 +430,25 @@ function renderJoin(page) {
   const code = node("input", null, codeLabel); code.value = draft.code; code.required = true; code.maxLength = 2000;
     code.placeholder = "粘贴加入码、邀请码或邀请链接（不是网络名称）"; code.autocomplete = "off"; code.autocapitalize = "none"; code.spellcheck = false;
     code.setAttribute("autocorrect", "off"); code.oninput = () => { draft.code = code.value; };
+  const paste = button(f, "粘贴邀请码", async () => {
+    paste.disabled = true;
+    try {
+      const value = (await navigator.clipboard.readText()).trim();
+      if (!f.isConnected || joinDraft !== draft) return;
+      let token = value;
+      if (/^https?:\/\//i.test(value)) token = new URLSearchParams(new URL(value).hash.slice(1)).get("invite") || "";
+      if (!/^INV-[A-Za-z0-9_-]{32}$/.test(token)) {
+        note("剪贴板中没有有效的邀请码，请手动粘贴加入码。"); code.focus(); return;
+      }
+      code.value = token; draft.code = token;
+      paste.textContent = "✓ 已填入";
+      note("邀请码已填入，请确认昵称后加入。");
+    } catch { if (f.isConnected) { code.focus(); note("客户端不允许读取剪贴板，请长按输入框粘贴。"); } }
+    finally {
+      paste.disabled = false;
+      setTimeout(() => {if(paste.isConnected) paste.textContent = "粘贴邀请码";},3000);
+    }
+  }, "secondary local-navigation");
   const label = node("label", "在此网络使用的昵称", f);
   const nickname = node("input", null, label); nickname.value = draft.nickname; nickname.required = true; nickname.maxLength = 40;
   nickname.oninput = () => { draft.nickname = nickname.value; };
