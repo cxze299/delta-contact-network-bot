@@ -584,6 +584,29 @@ function renderFind(page) {
       render();
     }, "quiet small-button");
   }
+  if (state.networks && state.networks.length > 1) {
+    const switcher = node("div", null, page, "home-network-switcher card");
+    const labelRow = node("div", null, switcher, "home-network-header");
+    node("span", "切换网络", labelRow, "home-network-title");
+    node("span", state.networks.length + " 个网络", labelRow, "muted");
+    const scroll = node("div", null, switcher, "home-network-scroll");
+    for (const n of state.networks) {
+      if (n.current) {
+        const pill = node("button", "✓ " + n.name, scroll, "home-network-pill active");
+        pill.type = "button";
+        pill.setAttribute("aria-current", "true");
+      } else {
+        const pill = button(scroll, n.name, () => {
+          command("切换网络", n.public_id);
+        }, "home-network-pill");
+        pill.setAttribute("aria-label", "切换到 " + n.name);
+      }
+    }
+    const addBtn = button(scroll, "+ 加入新网络", () => {
+      openJoin();
+    }, "home-network-pill add-pill");
+    addBtn.setAttribute("aria-label", "加入新网络");
+  }
   const title = node("div", null, page, "friends-heading");
   node("h1", "好友", title);
   node("span", "（点击名字切换别名）", title, "muted");
@@ -1027,6 +1050,27 @@ function getLatestApp() {
   submittingControl = $("get-latest");
   send("get_latest_app");
 }
+function openNetworkSwitchModal() {
+  const current = state.networks.find(n => n.current);
+  const dialog = openModal("home-network-picker", String(current?.id || ""), "切换网络");
+  const list = node("div", null, dialog, "network-picker-list");
+  for (const n of state.networks) {
+    const isCurrent = Boolean(n.current);
+    const option = button(list, "", () => {
+      closeModal();
+      if (!isCurrent) command("切换网络", n.public_id);
+    }, "quiet network-picker-option" + (isCurrent ? " active" : ""));
+    option.setAttribute("aria-pressed", String(isCurrent));
+    node("span", n.name, option);
+    const check = node("span", isCurrent ? "✓" : "", option, "network-picker-check");
+    check.setAttribute("aria-hidden", "true");
+  }
+  button(dialog, "+ 加入新网络", () => {
+    closeModal();
+    openJoin();
+  }, "secondary local-navigation");
+  button(dialog, "关闭", () => closeModal(), "quiet");
+}
 function render() {
   const update = $("get-latest");
   if (update) {
@@ -1036,7 +1080,24 @@ function render() {
   }
 
   document.body.classList.toggle("admin-mode", tab === "我的" && adminView);
-  const current = state.networks.find(n => n.current); $("network").textContent = state.pending?.network_name ? "正在加入 · " + state.pending.network_name : current?.name || "好友助手";
+  const current = state.networks.find(n => n.current);
+  const netEl = $("network");
+  netEl.textContent = state.pending?.network_name ? "正在加入 · " + state.pending.network_name : current?.name || "未加入网络";
+  if (state.networks && state.networks.length > 1) {
+    netEl.classList.add("can-switch");
+    netEl.setAttribute("role", "button");
+    netEl.setAttribute("tabindex", "0");
+    netEl.setAttribute("aria-label", "当前网络：" + (current?.name || "") + "，点击切换网络");
+    netEl.onclick = openNetworkSwitchModal;
+    netEl.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openNetworkSwitchModal(); } };
+  } else {
+    netEl.classList.remove("can-switch");
+    netEl.removeAttribute("role");
+    netEl.removeAttribute("tabindex");
+    netEl.removeAttribute("aria-label");
+    netEl.onclick = null;
+    netEl.onkeydown = null;
+  }
   const page = $("page"), wizard = $("wizard");
   if (state.instance_current === false) {
     closeModal(false); wizard.replaceChildren(); page.hidden=false; page.replaceChildren(); $("nav").replaceChildren();
