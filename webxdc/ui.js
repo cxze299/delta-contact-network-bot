@@ -84,12 +84,14 @@ function markUnknown() {
   if (!waiting) return;
   if (!unresolved.some(item => item.id === waiting.id)) unresolved.push(waiting);
   waiting = null; rememberPending(); rememberUnresolved(); operationFeedback(null);
-  note("操作结果暂未确认，请稍后查看。");
+  // Spinner remains active while unresolved
   render();
 }
 function syncOperationControls() {
-  const busy = Boolean(waiting || preparing);
+  const busy = Boolean(waiting || preparing || unresolved.length);
   document.querySelector("main").setAttribute("aria-busy", String(busy));
+  const spinner = $("operation-spinner");
+  if (spinner) spinner.hidden = !busy;
   for (const control of document.querySelectorAll("main button,main select,#modal-root button,#modal-root select")) {
     if (control.classList.contains("admin-back") || control.classList.contains("wizard-back") || control.classList.contains("local-navigation") || control.closest(".admin-tabs,.segments")) continue;
     if (busy && !control.disabled) { control.dataset.operationDisabled = "true"; control.disabled = true; }
@@ -583,29 +585,6 @@ function renderFind(page) {
       send("dismiss_invited_network");
       render();
     }, "quiet small-button");
-  }
-  if (state.networks && state.networks.length > 1) {
-    const switcher = node("div", null, page, "home-network-switcher card");
-    const labelRow = node("div", null, switcher, "home-network-header");
-    node("span", "切换网络", labelRow, "home-network-title");
-    node("span", state.networks.length + " 个网络", labelRow, "muted");
-    const scroll = node("div", null, switcher, "home-network-scroll");
-    for (const n of state.networks) {
-      if (n.current) {
-        const pill = node("button", "✓ " + n.name, scroll, "home-network-pill active");
-        pill.type = "button";
-        pill.setAttribute("aria-current", "true");
-      } else {
-        const pill = button(scroll, n.name, () => {
-          command("切换网络", n.public_id);
-        }, "home-network-pill");
-        pill.setAttribute("aria-label", "切换到 " + n.name);
-      }
-    }
-    const addBtn = button(scroll, "+ 加入新网络", () => {
-      openJoin();
-    }, "home-network-pill add-pill");
-    addBtn.setAttribute("aria-label", "加入新网络");
   }
   const title = node("div", null, page, "friends-heading");
   node("h1", "好友", title);
@@ -1292,7 +1271,7 @@ if (window.XdcTransportListen && bound) {
     if (settled.length) {
       unresolved = unresolved.filter(item => !settled.some(receipt => receipt.request_id === item.id));
       rememberUnresolved();
-      note(settled.every(receipt => receipt.ok) ? "之前的操作已完成。" : "之前的操作未完成。");
+      if (!settled.every(receipt => receipt.ok)) note("操作未完成，请重试。"); else note("");
     }
     const before = JSON.stringify({...state, at: null, receipt: null});
     const previousStep = state.pending?.action;
@@ -1308,7 +1287,7 @@ if (window.XdcTransportListen && bound) {
     ready = true; if (changed) { selected = null; expandedMembers.clear(); expandedSettings.clear(); adminConfirm = null; if (deletedProfile) notifications = []; }
     const joinResult = joinDraft?.requestId && (p.recent_receipts || []).find(receipt => receipt.request_id === joinDraft.requestId);
     if (joinResult) {
-      if (joinResult.ok) { joinDraft = null; tab = "好友"; adminView = false; scrollTop(); note("已加入网络。"); }
+      if (joinResult.ok) { joinDraft = null; tab = "好友"; adminView = false; scrollTop(); note(""); }
       else { joinDraft.requestId = null; note(joinResult.error || "加入未完成，请检查加入码。"); }
     }
     const receivedReceipt = Boolean(waiting && p.receipt?.request_id === waiting.id);
@@ -1341,7 +1320,15 @@ if (window.XdcTransportListen && bound) {
         scrollTop();
       }
       const error = (p.recent_receipts || []).find(receipt => receipt.request_id === p.receipt.request_id)?.error;
-      note(p.receipt.ok ? (latestRequested ? "已请求新版，请返回好友助手聊天查看。" : recoverySubmitted ? "恢复申请已提交，请联系管理员核实。" : cancelledJoin ? "已取消加入。" : completedJoin ? "已进入所选网络。" : "操作完成。") : (error || p.messages[p.messages.length - 1] || "操作未完成，请重试。"));
+      if (!p.receipt.ok) {
+        note(error || p.messages[p.messages.length - 1] || "操作未完成，请重试。");
+      } else if (latestRequested) {
+        note("已请求新版，请返回好友助手聊天查看。");
+      } else if (recoverySubmitted) {
+        note("恢复申请已提交，请联系管理员核实。");
+      } else {
+        note("");
+      }
     } else if (!waiting && firstState && !settled.length) note("");
     if (receivedReceipt || joinResult || before !== JSON.stringify({...state, at: null, receipt: null})) renderFromRemote(receivedReceipt || Boolean(joinResult) || changed);
     if (adminReceipt && adminView) {
