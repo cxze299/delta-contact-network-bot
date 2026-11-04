@@ -227,6 +227,27 @@ try { unresolved = JSON.parse(localStorage.getItem("friend-unresolved-v1") || "[
 try { waiting = JSON.parse(localStorage.getItem("friend-pending-v2") || "null"); } catch { /* Storage is optional. */ }
 if (waiting) waiting.phase = "unknown"; // Reloading never resends an operation.
 const bound = Boolean(window.CONTACT_CONFIG?.token);
+let lastTouchEndTime = 0;
+document.addEventListener("touchend", event => {
+  const now = Date.now();
+  if (now - lastTouchEndTime <= 300) {
+    const target = event.target;
+    const isInput = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+    if (!isInput) {
+      event.preventDefault();
+      const btn = target.closest("button, a, [role='button']");
+      if (btn) btn.click();
+    }
+  }
+  lastTouchEndTime = now;
+}, { passive: false });
+document.addEventListener("dblclick", event => {
+  const target = event.target;
+  const isInput = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+  if (!isInput) {
+    event.preventDefault();
+  }
+});
 function node(tag, text, parent, cls = "") {
   const e = document.createElement(tag);
   if (text !== undefined && text !== null) e.textContent = text;
