@@ -28,6 +28,55 @@ export class Service {
   ) {
     this.restoreDeletions();
   }
+  recordInvitePreview(token: string, networkId: number, networkName: string) {
+    const payload = JSON.stringify({
+      token,
+      network_id: networkId,
+      network_name: networkName,
+      at: Date.now(),
+    });
+    this.s.run(
+      "INSERT OR REPLACE INTO v2_runtime(key, value) VALUES('latest_invite_preview', ?)",
+      payload,
+    );
+  }
+  latestInvitePreview(maxAgeMs = 600000): { token: string; network_id: number; network_name: string; at: number } | null {
+    const row = this.s.one("SELECT value FROM v2_runtime WHERE key='latest_invite_preview'");
+    if (!row) return null;
+    try {
+      const data = JSON.parse(row.value);
+      if (Date.now() - data.at < maxAgeMs) return data;
+    } catch {}
+    return null;
+  }
+  setUserInvitedNetwork(userId: number, networkId: number, code: string, networkName: string) {
+    const payload = JSON.stringify({
+      network_id: networkId,
+      code,
+      name: networkName,
+      at: Date.now(),
+    });
+    this.s.run(
+      "INSERT OR REPLACE INTO v2_runtime(key, value) VALUES(?, ?)",
+      `invited_network:${userId}`,
+      payload,
+    );
+  }
+  getUserInvitedNetwork(userId: number): { network_id: number; code: string; name: string } | null {
+    const row = this.s.one("SELECT value FROM v2_runtime WHERE key=?", `invited_network:${userId}`);
+    if (!row) return null;
+    try {
+      const data = JSON.parse(row.value);
+      const n = this.s.one("SELECT status, join_enabled, name FROM networks WHERE id=?", data.network_id);
+      if (!n || n.status !== "active" || !n.join_enabled) return null;
+      return { network_id: data.network_id, code: data.code, name: n.name };
+    } catch {
+      return null;
+    }
+  }
+  clearUserInvitedNetwork(userId: number) {
+    this.s.run("DELETE FROM v2_runtime WHERE key=?", `invited_network:${userId}`);
+  }
   restoreDeletions() {
     if (this.s.path === ":memory:") return;
     const path = join(dirname(this.s.path), "deletions.jsonl");
@@ -404,6 +453,7 @@ export class Service {
     this.s.run("UPDATE v2_instances SET page=0 WHERE user_id=?", user.id);
     this.s.run("UPDATE v2_users SET deleted_at=NULL WHERE user_id=?", user.id);
     this.s.run("DELETE FROM pending_actions WHERE user_id=?", user.id);
+    this.clearUserInvitedNetwork(user.id);
     return "已加入网络。";
   }
   queueExchange(user: Row, target: Row, reason: string, forcePending = false) {
@@ -872,6 +922,7 @@ export class Service {
       user.actor_key,
       now(),
     );
+    this.clearUserInvitedNetwork(user.id);
   }
   recover(user: Row, c: Command) {
     const n = this.s.one(

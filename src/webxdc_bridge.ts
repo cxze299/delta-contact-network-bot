@@ -91,7 +91,7 @@ export class Bridge {
         if (!this.isLatest(instance) && !["refresh","start","get_latest_app"].includes(c.action)) throw new UserError("此小程序已失效，请获取新版");
         this.service.expire();
         if (
-          !["refresh", "read_notifications", "get_latest_app", "join_network", "cancel_join", "start"].includes(
+          !["refresh", "read_notifications", "get_latest_app", "join_network", "cancel_join", "start", "dismiss_invited_network"].includes(
             c.action,
           ) &&
           c.network !== user.current_network_id
@@ -142,6 +142,10 @@ export class Bridge {
             break;
           case "join_network":
             message = this.service.join(user, c);
+            break;
+          case "dismiss_invited_network":
+            this.service.clearUserInvitedNetwork(user.id);
+            message = "已取消预选网络。";
             break;
           case "cancel_join": {
             const p = this.s.one(
@@ -383,6 +387,15 @@ export class Bridge {
         )
         .reverse(),
       invitations: profile ? new NetworkInvites(this.service).list(u.current_network_id,u.id) : [],
+      invited_network: (() => {
+        const invited = this.service.getUserInvitedNetwork(u.id);
+        if (!invited || invited.network_id === u.current_network_id) return null;
+        if (this.s.one("SELECT 1 FROM memberships WHERE user_id=? AND network_id=? AND status='active'", u.id, invited.network_id)) {
+          this.service.clearUserInvitedNetwork(u.id);
+          return null;
+        }
+        return invited;
+      })(),
       profile,
       communication_address: profile ? u.address : "",
       admin_role: this.admin.system(u) ? "system" : null,

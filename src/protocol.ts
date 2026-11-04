@@ -13,6 +13,7 @@ export const Command = z
       "start",
       "join_network",
       "cancel_join",
+      "dismiss_invited_network",
       "use_current_account",
       "directory",
       "command",

@@ -112,6 +112,7 @@ export function createAdmin(
       const {token} = JSON.parse(text);
       if (typeof token !== "string") return c.json({error:"邀请无效"},400);
       const row = new NetworkInvites(service).find(token);
+      service.recordInvitePreview(token, row.network_id, row.name);
       if (!invite) return c.json({error:"机器人暂不可用，请稍后再试"},503);
       return c.json({name:row.name,bot:invitationLink(await invite())});
     } catch { return c.json({error:"邀请已失效或暂不可用，请联系管理员"},400); }

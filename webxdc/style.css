@@ -31,7 +31,10 @@ main{width:100%;height:100%;min-height:0;margin:0 auto;padding-bottom:16px;overf
 nav{position:relative;bottom:auto;left:auto;right:auto;flex-shrink:0}
 #status{font-size:14px;margin-bottom:16px}
 .onboarding{border:0;margin-top:16px}
-.onboarding>button.primary{width:100%;margin-top:16px}
+.onboarding>button{display:block;width:100%;min-height:44px;border-radius:12px;font-size:15px;font-weight:600;margin-top:10px;box-sizing:border-box}
+.onboarding>button:first-of-type{margin-top:16px}
+.onboarding>button.primary{background:var(--blue);color:#fff}
+.onboarding>button.secondary{background:var(--soft);color:var(--blue)}
 .account-value{font-size:17px;overflow-wrap:anywhere;margin:16px 0 24px}
 .setup-notice{font-size:13px;color:var(--muted);line-height:1.5;margin-top:18px}
 .onboarding .setting{flex-wrap:nowrap}
@@ -119,3 +122,7 @@ h1{font-size:26px;letter-spacing:-.02em;margin:16px 0 18px;line-height:1.25}.top
 .ios-switch[aria-busy="true"]{opacity:.65}.ios-switch[aria-busy="true"] .switch-knob{box-shadow:0 0 0 2px rgba(0,0,0,.16)}
 
 button.copy-success{background:#d9f2e3;color:#176b38;opacity:1}.invite-open{display:inline-block;padding:12px;margin:4px;border-radius:12px;background:var(--soft);color:var(--blue);font-size:16px;font-weight:600;text-decoration:none}
+
+.invite-preset-banner{background:var(--soft);border-radius:12px;padding:14px 16px;margin:8px 0 16px;display:flex;flex-direction:column;gap:4px}
+.invite-preset-banner .accent-text{color:var(--blue);font-weight:700;font-size:17px;margin:2px 0}
+.small-button{min-height:32px;padding:4px 10px;font-size:13px;align-self:flex-start;margin-top:6px}

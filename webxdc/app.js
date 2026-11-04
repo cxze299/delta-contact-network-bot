@@ -208,8 +208,7 @@
 "use strict";
 // Identity and permissions come from Core and the server, never selfAddr.
 const $ = id => document.getElementById(id);
-let state = {networks: [], pending: null, messages: [], requests: [], choices: [], profile: null, current_network: null};
-let dismissedInvitedNetwork = false;
+let state = {networks: [], pending: null, messages: [], requests: [], choices: [], profile: null, current_network: null, invited_network: null};
 let tab = "好友", filter = "待处理", preparing = false, ready = false, selected = null;
 let deferredRemoteRender = false;
 let adminView = false, adminSection = "网络", adminConfirm = null, adminUnlocking = false;
@@ -222,6 +221,7 @@ try { readNotifications = JSON.parse(localStorage.getItem("friend-notifications-
 let waiting = null, waitTimer, submittingControl = null, busyControl = null, lastStateSerial = 0;
 let dismissedStep = null;
 let joinDraft = null;
+let dismissedInvitedNetwork = false;
 let unresolved = [];
 try { unresolved = JSON.parse(localStorage.getItem("friend-unresolved-v1") || "[]"); if (!Array.isArray(unresolved)) unresolved = []; } catch { unresolved = []; }
 try { waiting = JSON.parse(localStorage.getItem("friend-pending-v2") || "null"); } catch { /* Storage is optional. */ }
@@ -449,44 +449,68 @@ async function checkClipboardInvite() {
   } catch {}
   return null;
 }
-function openJoin(initialCode = "", networkName = "") {
+async function openJoin(initialCode = "", networkName = "") {
+  if (!initialCode && state.invited_network && state.invited_network.network_id !== state.current_network) {
+    initialCode = state.invited_network.code;
+    networkName = state.invited_network.name;
+  }
+  if (!initialCode) {
+    const clip = await checkClipboardInvite();
+    if (clip) initialCode = clip;
+  }
   joinDraft = {code: initialCode, network_name: networkName, nickname: state.profile?.nickname || "", discoverable: true, accepts: true, requestId: null};
   dismissedStep = state.pending?.token || null;
   adminView = false; adminConfirm = null; closeModal(); render(); scrollTop();
 }
 function renderJoin(page) {
   const draft = joinDraft;
-  button(page, "‹ 返回", () => { joinDraft = null; dismissedInvitedNetwork = true; tab = state.profile ? "我的" : "好友"; render(); scrollTop(); }, "quiet local-navigation");
-  node("h1", draft.network_name ? "加入 " + draft.network_name : "加入新网络", page);
+  button(page, "‹ 返回", () => {
+    joinDraft = null;
+    dismissedInvitedNetwork = true;
+    tab = state.profile ? "我的" : "好友";
+    render();
+    scrollTop();
+  }, "quiet local-navigation");
+  node("h1", draft.network_name ? "加入「" + draft.network_name + "」" : "加入新网络", page);
   const f = node("form", null, page, "card onboarding");
   if (draft.network_name) {
-    node("p", "已为你选中邀请网络：" + draft.network_name, f, "invite-preset-banner");
-    button(f,"改用其他邀请",()=>{draft.code="";draft.network_name="";dismissedInvitedNetwork=true;send("dismiss_invited_network");render();},"secondary");
-  }
-  const codeLabel = node("label", "网络加入码", f);
-  const code = node("input", null, codeLabel); code.value = draft.code; code.required = true; code.maxLength = 2000;
+    const banner = node("div", null, f, "invite-preset-banner");
+    node("div", "已预选邀请网络：", banner, "muted");
+    node("div", draft.network_name, banner, "accent-text");
+    button(banner, "更换其他加入码", () => {
+      draft.network_name = "";
+      draft.code = "";
+      dismissedInvitedNetwork = true;
+      send("dismiss_invited_network");
+      render();
+    }, "quiet small-button");
+  } else {
+    const codeLabel = node("label", "网络加入码", f);
+    const code = node("input", null, codeLabel); code.value = draft.code; code.required = true; code.maxLength = 2000;
     code.placeholder = "粘贴加入码、邀请码或邀请链接（不是网络名称）"; code.autocomplete = "off"; code.autocapitalize = "none"; code.spellcheck = false;
     code.setAttribute("autocorrect", "off"); code.oninput = () => { draft.code = code.value; };
-  const paste = button(f, "粘贴邀请码", async () => {
-    paste.disabled = true;
-    try {
-      const value = (await navigator.clipboard.readText()).trim();
-      if (!f.isConnected || joinDraft !== draft) return;
-      let token = value;
-      if (/^https?:\/\//i.test(value)) token = new URLSearchParams(new URL(value).hash.slice(1)).get("invite") || "";
-      if (!/^INV-[A-Za-z0-9_-]{32}$/.test(token)) {
-        note("剪贴板中没有有效的邀请码，请手动粘贴加入码。"); code.focus(); return;
+    const paste = button(f, "粘贴邀请码", async () => {
+      paste.disabled = true;
+      try {
+        const value = (await navigator.clipboard.readText()).trim();
+        if (!f.isConnected || joinDraft !== draft) return;
+        let token = value;
+        const tokenMatch = value.match(/INV-[A-Za-z0-9_-]{32}/);
+        if (tokenMatch) token = tokenMatch[0];
+        else if (/^https?:\/\//i.test(value)) token = new URLSearchParams(new URL(value).hash.slice(1)).get("invite") || "";
+        if (!/^INV-[A-Za-z0-9_-]{32}$/.test(token)) {
+          note("剪贴板中没有有效的邀请码，请手动粘贴加入码。"); return;
+        }
+        code.value = token; draft.code = token;
+        paste.textContent = "✓ 已填入";
+        note("邀请码已填入，请确认昵称后加入。");
+      } catch { if (f.isConnected) { note("客户端不允许读取剪贴板，请长按输入框粘贴。"); } }
+      finally {
+        paste.disabled = false;
+        setTimeout(() => {if(paste.isConnected) paste.textContent = "粘贴邀请码";},3000);
       }
-      code.value = token; draft.code = token;
-      paste.textContent = "✓ 已填入";
-      note("邀请码已填入，请确认昵称后加入。");
-    } catch { if (f.isConnected) { code.focus(); note("客户端不允许读取剪贴板，请长按输入框粘贴。"); } }
-    finally {
-      paste.disabled = false;
-      setTimeout(() => {if(paste.isConnected) paste.textContent = "粘贴邀请码";},3000);
-    }
-  }, "secondary local-navigation");
-  if (draft.network_name) {codeLabel.hidden=true;code.required=false;paste.hidden=true;}
+    }, "secondary local-navigation");
+  }
   const label = node("label", "在此网络使用的昵称", f);
   const nickname = node("input", null, label); nickname.value = draft.nickname; nickname.required = true; nickname.maxLength = 40;
   nickname.oninput = () => { draft.nickname = nickname.value; };
@@ -495,7 +519,8 @@ function renderJoin(page) {
   localSwitch(f, "在好友列表展示我", draft.discoverable, enabled => { draft.discoverable = enabled; });
   localSwitch(f, "接收好友申请", draft.accepts, enabled => { draft.accepts = enabled; });
   node("p", "加入后开启名片交换。服务端可处理资料；交付的名片无法撤回。", f, "setup-notice");
-  const submit = node("button", "加入网络", f, "primary"); submit.type = "submit"; submit.disabled = !ready;
+  const submitText = draft.network_name ? "确认加入「" + draft.network_name + "」" : "加入网络";
+  const submit = node("button", submitText, f, "primary"); submit.type = "submit"; submit.disabled = !ready;
   f.onsubmit = event => {
     event.preventDefault(); submittingControl = submit; document.activeElement?.blur();
     send("join_network", {value: draft.code.trim(), nickname: draft.nickname.trim(), consent: true, use_current_account: true, discoverable: draft.discoverable, accepts_requests: draft.accepts});
@@ -731,6 +756,20 @@ function renderNameEditor(parent, profile) {
   draw();
 }
 function renderFind(page) {
+  if (state.invited_network && state.invited_network.network_id !== state.current_network) {
+    const banner = node("div", null, page, "invite-preset-banner card");
+    node("div", "收到新网络邀请：", banner, "muted");
+    node("div", state.invited_network.name, banner, "accent-text");
+    button(banner, "加入「" + state.invited_network.name + "」", () => {
+      dismissedInvitedNetwork = false;
+      openJoin(state.invited_network.code, state.invited_network.name);
+    }, "primary local-navigation");
+    button(banner, "忽略", () => {
+      dismissedInvitedNetwork = true;
+      send("dismiss_invited_network");
+      render();
+    }, "quiet small-button");
+  }
   const title = node("div", null, page, "friends-heading");
   node("h1", "好友", title);
   node("span", "（点击名字切换别名）", title, "muted");
@@ -912,6 +951,12 @@ function renderMe(page) {
     button(dialog,"撤销",()=>{closeModal();send("network_invite_revoke",{value:String(id)});},"danger");
     const cancel=button(dialog,"取消",()=>closeModal(),"secondary");finishModal(dialog,cancel);
   });
+  if (state.invited_network && state.invited_network.network_id !== state.current_network) {
+    button(networks, "加入邀请网络 · " + state.invited_network.name, () => {
+      dismissedInvitedNetwork = false;
+      openJoin(state.invited_network.code, state.invited_network.name);
+    }, "primary local-navigation");
+  }
   button(networks, "加入新网络", () => openJoin(), "primary local-navigation");
   if (state.networks.some(n => n.current)) button(networks, "退出网络", () => command("退出网络"), "danger");
   button(networks, "管理网络", () => {
@@ -1190,9 +1235,6 @@ function render() {
   renderWizard(); page.replaceChildren();
   const setup = !joinDraft && bound && ready && dismissedStep !== state.pending?.token && ["guide_join_code", "guide_nickname", "join"].includes(state.pending?.action);
   page.hidden = setup;
-  if (ready && state.invited_network && !joinDraft && !dismissedInvitedNetwork && !state.profile) {
-    joinDraft={code:state.invited_network.code,network_name:state.invited_network.name,nickname:"",discoverable:true,accepts:true,requestId:null};
-  }
   if (joinDraft) {
     renderJoin(page);
   } else if (setup) {
@@ -1204,11 +1246,42 @@ function render() {
     button(card, "向好友助手获取我的应用", () => send("refresh"), "primary"); 
   } else if (!ready) {
     node("h1", "正在读取你的网络", page); node("p", "等待机器人状态。若一直未出现，回到私聊发送“小程序”。", page, "empty muted");
+  } else if (state.invited_network && !joinDraft && !dismissedInvitedNetwork && state.invited_network.network_id !== state.current_network) {
+    joinDraft = {code: state.invited_network.code, network_name: state.invited_network.name, nickname: state.profile?.nickname || "", discoverable: true, accepts: true, requestId: null};
+    renderJoin(page);
   } else if (!state.profile && !["我的", "消息"].includes(tab)) {
-    node("h1", "加入你的网络", page);
-    const card = node("section", null, page, "card onboarding");
-    button(card, "加入网络", async () => openJoin(await checkClipboardInvite() || ""), "primary local-navigation");
-    node("p", "加入码请勿公开传播。", card, "setup-notice");
+    if (state.invited_network && !joinDraft && !dismissedInvitedNetwork) {
+      joinDraft = {code: state.invited_network.code, network_name: state.invited_network.name, nickname: state.profile?.nickname || "", discoverable: true, accepts: true, requestId: null};
+      renderJoin(page);
+    } else {
+      node("h1", "加入你的网络", page);
+      const card = node("section", null, page, "card onboarding");
+      if (state.invited_network) {
+        const b = node("div", null, card, "invite-preset-banner");
+        node("div", "来自邀请网络：", b, "muted");
+        node("div", state.invited_network.name, b, "accent-text");
+        button(card, "加入「" + state.invited_network.name + "」", () => {
+          dismissedInvitedNetwork = false;
+          openJoin(state.invited_network.code, state.invited_network.name);
+        }, "primary local-navigation");
+        button(card, "输入其他加入码", () => {
+          dismissedInvitedNetwork = true;
+          openJoin();
+        }, "primary local-navigation");
+      } else {
+        button(card, "从剪贴板识别邀请并加入", async () => {
+          const clip = await checkClipboardInvite();
+          if (clip) {
+            openJoin(clip);
+            note("已识别剪贴板中的邀请码。");
+          } else {
+            note("剪贴板中未检测到有效邀请码，请手动输入加入码。");
+          }
+        }, "primary local-navigation");
+        button(card, "手动输入加入码", () => openJoin(), "primary local-navigation");
+      }
+      node("p", "加入码请勿公开传播。", card, "setup-notice");
+    }
   } else if (tab === "我的" && adminView) renderAdmin(page);
   else if (state.profile && !state.profile.share_contact && tab === "好友") {
     node("h1", "完成账号设置", page);
@@ -1352,6 +1425,9 @@ if (window.XdcTransportListen && bound) {
     const changed = p.current_network !== state.current_network || !p.profile;
     const deletedProfile = Boolean(state.profile) && !p.profile;
     const unlockSucceeded = waiting && waiting.kind === "admin_unlock" && p.receipt?.request_id === waiting.id && p.receipt.ok;
+    if (p.invited_network?.code && p.invited_network.code !== state.invited_network?.code) {
+      dismissedInvitedNetwork = false;
+    }
     state = {...p, requests: p.requests || [], choices: p.choices || [], messages: unlockSucceeded ? [] : p.messages.length || changed ? p.messages : state.messages};
     for (const id of p.read_notifications || []) readNotifications[id] = true;
     ready = true; if (changed) { selected = null; expandedMembers.clear(); expandedSettings.clear(); adminConfirm = null; if (deletedProfile) notifications = []; }

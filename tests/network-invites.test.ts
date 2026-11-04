@@ -59,3 +59,95 @@ test("ordinary members can revoke only their own invitation and leaving revokes 
  expect(()=>invites.find(next.link)).toThrow();
  }finally{f.s.close();}
 });
+
+test("invited network preview and auto-selection across bridge and user lifecycle", async () => {
+  const f = fixture();
+  try {
+    f.config.publicUrl = "https://bot.example.org";
+    const n = f.create("Invite Preselection Test");
+    const invites = new NetworkInvites(f.service);
+    invites.create(n.network, f.user.id);
+    const invitation = invites.list(n.network)[0];
+    const token = invites.token(invitation.link)!;
+
+    // 1. Calling /api/public-invite records the preview
+    const app = createAdmin(f.service, f.bridge.admin, () => true, () => {}, async () => "https://i.delta.chat/#test");
+    const response = await app.request("/api/public-invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token })
+    });
+    expect(response.status).toBe(200);
+
+    const preview = f.service.latestInvitePreview(60000);
+    expect(preview).not.toBeNull();
+    expect(preview?.token).toBe(token);
+    expect(preview?.network_name).toBe("Invite Preselection Test");
+
+    // 2. Set user invited network for a user without profile
+    f.service.setUserInvitedNetwork(f.user.id, preview!.network_id, preview!.token, preview!.network_name);
+
+    const invited = f.service.getUserInvitedNetwork(f.user.id);
+    expect(invited).not.toBeNull();
+    expect(invited?.name).toBe("Invite Preselection Test");
+    expect(invited?.code).toBe(token);
+
+    // 3. Instance snapshot includes invited_network
+    const snap = f.bridge.snapshot(f.instance());
+    expect(snap.invited_network).toEqual({
+      network_id: preview!.network_id,
+      code: preview!.token,
+      name: preview!.network_name
+    });
+
+    // 4. Action dismiss_invited_network clears it
+    f.call("dismiss_invited_network");
+    expect(f.service.getUserInvitedNetwork(f.user.id)).toBeNull();
+    expect(f.bridge.snapshot(f.instance()).invited_network).toBeNull();
+
+    // 5. Re-set and verify joining clears invited_network
+    f.service.setUserInvitedNetwork(f.user.id, preview!.network_id, preview!.token, preview!.network_name);
+    expect(f.service.getUserInvitedNetwork(f.user.id)).not.toBeNull();
+
+    const joinRes = f.call("join_network", {
+      value: token,
+      nickname: "Joined User",
+      consent: true,
+      use_current_account: true,
+      discoverable: true,
+      accepts_requests: true
+    });
+    expect(joinRes.receipt.ok).toBe(1);
+    expect(f.service.getUserInvitedNetwork(f.user.id)).toBeNull();
+    expect(f.bridge.snapshot(f.instance()).invited_network).toBeNull();
+
+    // 6. User already has active profile in Network A; receives invitation for Network B
+    const netB = f.create("Network B");
+    invites.create(netB.network, f.user.id);
+    const tokenB = invites.token(invites.list(netB.network)[0].link)!;
+    f.service.setUserInvitedNetwork(f.user.id, netB.network, tokenB, "Network B");
+
+    const snapWithProfile = f.bridge.snapshot(f.instance());
+    expect(snapWithProfile.profile).not.toBeNull();
+    expect(snapWithProfile.invited_network).toEqual({
+      network_id: netB.network,
+      code: tokenB,
+      name: "Network B"
+    });
+
+    // 7. Joining Network B clears invited_network and switches current network
+    const joinB = f.call("join_network", {
+      value: tokenB,
+      nickname: "Joined User B",
+      consent: true,
+      use_current_account: true,
+      discoverable: true,
+      accepts_requests: true
+    });
+    expect(joinB.receipt.ok).toBe(1);
+    expect(f.bridge.snapshot(f.instance()).invited_network).toBeNull();
+    expect(f.bridge.snapshot(f.instance()).current_network).toBe(netB.network);
+  } finally {
+    f.s.close();
+  }
+});

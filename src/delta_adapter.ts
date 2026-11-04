@@ -1,4 +1,5 @@
 import { syncBotAvatar } from "./bot_avatar";
+import { NetworkInvites } from "./network_invites";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   StdioDeltaChat,
@@ -31,25 +32,45 @@ export class DeltaAdapter implements Publisher {
   account = 0;
   online = false;
   stopping = false;
-  private tail = Promise.resolve();
-  private queued = 0;
+  private queue: Array<{ task: () => Promise<void>; priority: number }> = [];
+  private running = false;
   private maintenance = 0;
   private timer?: ReturnType<typeof setInterval>;
   private live = new Map<string, number>();
+  private identityCache = new Map<number, { addr: string; fingerprint: string }>();
+  private staticAssetsCache: Record<string, Uint8Array> | null = null;
   constructor(
     readonly service: Service,
     readonly config: Config,
   ) {}
-  enqueue(task: () => Promise<void>) {
-    this.queued++;
-    this.tail = this.tail
-      .then(task)
-      .catch((e) =>
-        console.warn("Task deferred:", e instanceof Error ? e.name : "Error"),
-      )
-      .finally(() => {
-        this.queued--;
-      });
+  enqueue(task: () => Promise<void>, priority = 0) {
+    this.queue.push({ task, priority });
+    this.queue.sort((a, b) => a.priority - b.priority);
+    void this.processQueue();
+  }
+  get queued() {
+    return this.queue.length;
+  }
+  private async processQueue() {
+    if (this.running) return;
+    this.running = true;
+    while (this.queue.length > 0) {
+      const item = this.queue.shift();
+      if (!item) break;
+      try {
+        await item.task();
+      } catch (e) {
+        console.warn("Task deferred:", e instanceof Error ? e.name : "Error");
+      }
+    }
+    this.running = false;
+  }
+  private getAssets(): Record<string, Uint8Array> {
+    if (!this.staticAssetsCache) {
+      const entries = this.getAssets();
+      this.staticAssetsCache = entries;
+    }
+    return { ...this.staticAssetsCache };
   }
   isLive(token: string) {
     const at = this.live.get(token);
@@ -88,6 +109,9 @@ export class DeltaAdapter implements Publisher {
     this.account = this.config.accountId || accounts[0];
     if (!this.account || !(await this.rpc.isConfigured(this.account)))
       throw Error("A configured bot account is required");
+    try {
+      await this.rpc.setConfig(this.account, "bcc_self", "0");
+    } catch {}
     await syncBotAvatar(this.rpc, this.account, this.config.assets, this.config.accounts);
     await this.rpc.startIo(this.account);
     this.online = true;
@@ -121,7 +145,7 @@ export class DeltaAdapter implements Publisher {
         }
         await this.deliver();
         await this.bridge.publishAll();
-      });
+      }, 1);
     }, 15000);
     void this.events();
   }
@@ -165,6 +189,10 @@ export class DeltaAdapter implements Publisher {
                   await this.bridge.publish(i, false, true);
                   return;
                 }
+                const preview = this.service.latestInvitePreview(600000);
+                if (preview && !this.service.s.one("SELECT 1 FROM memberships WHERE user_id=? AND network_id=? AND status='active'", i.user_id, preview.network_id)) {
+                  this.service.setUserInvitedNetwork(i.user_id, preview.network_id, preview.token, preview.network_name);
+                }
                 this.live.set(i.token, Date.now());
                 await this.rpc.sendWebxdcRealtimeAdvertisement(
                   this.account,
@@ -177,7 +205,9 @@ export class DeltaAdapter implements Publisher {
                 this.live.set(i.token, Date.now());
                 await this.bridge.publish(i, false, true);
                 await this.deliver();
-                await this.bridge.publishAll(undefined, i.token);
+                this.enqueue(async () => {
+                  await this.bridge.publishAll(undefined, i.token);
+                }, 1);
               }
             });
           else if (e.kind === "WebxdcRealtimeAdvertisementReceived")
@@ -208,6 +238,16 @@ export class DeltaAdapter implements Publisher {
     }
   }
   async identity(chatId: number, contactId: number): Promise<Identity> {
+    const cached = this.identityCache.get(contactId);
+    if (cached) {
+      return {
+        accountId: this.account,
+        chatId,
+        contactId,
+        address: cached.addr,
+        fingerprint: cached.fingerprint,
+      };
+    }
     const chat = await this.rpc.getBasicChatInfo(this.account, chatId);
     if (
       chat.chatType !== "Single" ||
@@ -231,13 +271,15 @@ export class DeltaAdapter implements Publisher {
       !parsed.key
     )
       throw Error("Contact key unavailable");
-    return {
+    const res = {
       accountId: this.account,
       chatId,
       contactId,
       address: contact.address,
       fingerprint: fingerprint(parsed.key),
     };
+    this.identityCache.set(contactId, { addr: res.address, fingerprint: res.fingerprint });
+    return res;
   }
   async cardContact(contactId: number) {
     const folder = mkdtempSync(join(tmpdir(), "friend-vcard-"));
@@ -282,6 +324,7 @@ export class DeltaAdapter implements Publisher {
   }
   async onSecureJoin(contactId: number, newHandshake = false) {
     if (contactId <= 9) return;
+    this.identityCache.delete(contactId);
     const contact = await this.rpc.getContact(this.account, contactId);
     if ((!contact.isVerified && !contact.isKeyContact) || contact.isBlocked) return;
     const chatId = await this.rpc.createChatByContactId(this.account, contactId);
@@ -306,6 +349,10 @@ export class DeltaAdapter implements Publisher {
       return !existing;
     });
     if (!claimed) return;
+    const preview = this.service.latestInvitePreview(600000);
+    if (preview && !this.service.s.one("SELECT 1 FROM memberships WHERE user_id=? AND network_id=? AND status='active'", user.id, preview.network_id)) {
+      this.service.setUserInvitedNetwork(user.id, preview.network_id, preview.token, preview.network_name);
+    }
     // Persist before delivery: an ambiguous send is never automatically repeated.
     await this.offer(user, identity);
     this.service.s.run("UPDATE v2_runtime SET value='sent' WHERE key=?", key);
@@ -328,6 +375,37 @@ export class DeltaAdapter implements Publisher {
       )
     )
       return;
+    let inviteToken: string | null = null;
+    const text = (m.text || "").trim();
+    if (text) {
+      const tokenMatch = text.match(/INV-[A-Za-z0-9_-]{32}/i);
+      if (tokenMatch) inviteToken = tokenMatch[0];
+      else if (/^https?:\/\//i.test(text)) {
+        try {
+          const parsedUrl = new URL(text);
+          const hashParams = new URLSearchParams(parsedUrl.hash.replace(/^#/, ""));
+          const hashToken = hashParams.get("invite");
+          if (hashToken && /^INV-[A-Za-z0-9_-]{32}$/i.test(hashToken)) inviteToken = hashToken;
+          else {
+            const queryToken = parsedUrl.searchParams.get("invite");
+            if (queryToken && /^INV-[A-Za-z0-9_-]{32}$/i.test(queryToken)) inviteToken = queryToken;
+          }
+        } catch {}
+      }
+    }
+    if (inviteToken) {
+      try {
+        const row = new NetworkInvites(this.service).find(inviteToken);
+        if (row && !this.service.s.one("SELECT 1 FROM memberships WHERE user_id=? AND network_id=? AND status='active'", u.id, row.network_id)) {
+          this.service.setUserInvitedNetwork(u.id, row.network_id, inviteToken, row.name);
+        }
+      } catch {}
+    } else {
+      const preview = this.service.latestInvitePreview(600000);
+      if (preview && !this.service.s.one("SELECT 1 FROM memberships WHERE user_id=? AND network_id=? AND status='active'", u.id, preview.network_id)) {
+        this.service.setUserInvitedNetwork(u.id, preview.network_id, preview.token, preview.network_name);
+      }
+    }
     await this.offer(u, identity);
     this.service.s.tx(() =>
       this.service.s.run(
@@ -386,10 +464,24 @@ export class DeltaAdapter implements Publisher {
       const i = this.bridge.instance(this.account, messageId)!;
       await this.bridge.publish(i, true);
       await this.rpc.sendWebxdcRealtimeAdvertisement(this.account, messageId);
-      for (const old of this.service.s.all("SELECT x.*,v.user_id,v.snapshot FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE v.user_id=? AND x.token<>?", user.id, token)) {
+      const oldRows = this.service.s.all(
+        "SELECT x.*,v.user_id,v.snapshot FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE v.user_id=? AND x.token<>? ORDER BY x.rowid DESC",
+        user.id,
+        token,
+      );
+      for (let idx = 0; idx < oldRows.length; idx++) {
+        const old = oldRows[idx];
         this.live.delete(old.token);
         if (old.snapshot && JSON.parse(old.snapshot).instance_current === false) continue;
-        try { await this.bridge.publish(old, false, true); } catch { /* Old clients learn retirement on their next request. */ }
+        if (idx === 0) {
+          try { await this.bridge.publish(old, false, true); } catch {}
+        } else {
+          try {
+            const snap = old.snapshot ? JSON.parse(old.snapshot) : {};
+            snap.instance_current = false;
+            this.service.s.run("UPDATE v2_instances SET snapshot=? WHERE token=?", JSON.stringify(snap), old.token);
+          } catch {}
+        }
       }
 
     } finally {
