@@ -1,3 +1,4 @@
+import { syncBotAvatar } from "./bot_avatar";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   StdioDeltaChat,
@@ -87,6 +88,7 @@ export class DeltaAdapter implements Publisher {
     this.account = this.config.accountId || accounts[0];
     if (!this.account || !(await this.rpc.isConfigured(this.account)))
       throw Error("A configured bot account is required");
+    await syncBotAvatar(this.rpc, this.account, this.config.assets, this.config.accounts);
     await this.rpc.startIo(this.account);
     this.online = true;
     this.child.on("exit", () => {
