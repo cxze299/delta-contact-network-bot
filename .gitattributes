@@ -1,2 +1,6 @@
 * text=auto eol=lf
 *.sh text eol=lf
+
+scripts/cloud-health-watch.sh text eol=lf
+scripts/friend-assistant-health.service text eol=lf
+scripts/friend-assistant-health.timer text eol=lf
