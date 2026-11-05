@@ -4,3 +4,5 @@
 scripts/cloud-health-watch.sh text eol=lf
 scripts/friend-assistant-health.service text eol=lf
 scripts/friend-assistant-health.timer text eol=lf
+
+scripts/chatmail-recipient-isolation.sh text eol=lf
