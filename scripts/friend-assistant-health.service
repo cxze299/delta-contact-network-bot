@@ -1,0 +1,7 @@
+[Unit]
+Description=Recover unhealthy Friend Assistant container
+After=docker.service
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/friend-assistant/app/scripts/cloud-health-watch.sh
+TimeoutStartSec=90

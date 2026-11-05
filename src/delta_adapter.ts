@@ -34,6 +34,7 @@ export class DeltaAdapter implements Publisher {
   stopping = false;
   private queue: Array<{ task: () => Promise<void>; priority: number }> = [];
   private running = false;
+  private idleWaiters: Array<() => void> = [];
   private maintenance = 0;
   private timer?: ReturnType<typeof setInterval>;
   private live = new Map<string, number>();
@@ -64,10 +65,34 @@ export class DeltaAdapter implements Publisher {
       }
     }
     this.running = false;
+    for (const resolve of this.idleWaiters.splice(0)) resolve();
+  }
+  private yieldingInteractive = false;
+  async yieldToInteractive() {
+    if (this.yieldingInteractive) return;
+    this.yieldingInteractive = true;
+    try {
+      // Bound the slice; keep all business operations serial and never retry.
+      for (let n = 0; n < 8 && this.queue[0]?.priority <= 0; n++) {
+        const item = this.queue.shift()!;
+        try { await item.task(); }
+        catch (e) { console.warn("Task deferred:", e instanceof Error ? e.name : "Error"); }
+      }
+    } finally { this.yieldingInteractive = false; }
   }
   private getAssets(): Record<string, Uint8Array> {
     if (!this.staticAssetsCache) {
-      const entries = this.getAssets();
+      const entries: Record<string, Uint8Array> = {};
+      for (const name of [
+        "index.html",
+        "style.css",
+        "app.js",
+        "manifest.toml",
+        "icon.png",
+      ])
+        entries[name] = new Uint8Array(
+          readFileSync(join(this.config.assets, name)),
+        );
       this.staticAssetsCache = entries;
     }
     return { ...this.staticAssetsCache };
@@ -141,7 +166,7 @@ export class DeltaAdapter implements Publisher {
             "SELECT x.*,v.user_id FROM xdc_instances x JOIN v2_instances v ON v.token=x.token WHERE x.account_id=? AND x.rowid=(SELECT MAX(xx.rowid) FROM xdc_instances xx JOIN v2_instances vv ON vv.token=xx.token WHERE vv.user_id=v.user_id)",
             this.account,
           ))
-            await this.consume(i);
+            { await this.yieldToInteractive(); await this.consume(i); }
         }
         await this.deliver();
         await this.bridge.publishAll();
@@ -420,17 +445,7 @@ export class DeltaAdapter implements Publisher {
     const token = random(32),
       folder = mkdtempSync(join(tmpdir(), "friend-xdc-"));
     try {
-      const entries: Record<string, Uint8Array> = {};
-      for (const name of [
-        "index.html",
-        "style.css",
-        "app.js",
-        "manifest.toml",
-        "icon.png",
-      ])
-        entries[name] = new Uint8Array(
-          readFileSync(join(this.config.assets, name)),
-        );
+      const entries = this.getAssets();
       entries["config.js"] = strToU8(
         "window.CONTACT_CONFIG=" + JSON.stringify({ token, protocol: 3, ui_version: this.bridge.latestUiVersion }) + ";",
       );
@@ -747,7 +762,7 @@ export class DeltaAdapter implements Publisher {
     this.stopping = true;
     this.online = false;
     if (this.timer) clearInterval(this.timer);
-    await this.tail;
+    if (this.running) await new Promise<void>(resolve => this.idleWaiters.push(resolve));
     try {
       await this.rpc.stopIo(this.account);
     } finally {

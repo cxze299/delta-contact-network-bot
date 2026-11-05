@@ -6,6 +6,7 @@ import { Admin } from "./xdc_admin";
 import { type Row } from "./db";
 import { decrypt, encrypt, hmac, hash, equal } from "./crypto";
 export interface Publisher {
+  yieldToInteractive?(): Promise<void>;
   isLive?(token: string): boolean;
   status(
     account: number,
@@ -530,6 +531,7 @@ export class Bridge {
     });
     targets.sort((a,b) => Number(b.token === realtimeToken || !!this.publisher.isLive?.(b.token)) - Number(a.token === realtimeToken || !!this.publisher.isLive?.(a.token)));
     for (const row of targets) {
+      await this.publisher.yieldToInteractive?.();
       try {
         await this.publish(
           row,

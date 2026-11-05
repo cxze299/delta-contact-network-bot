@@ -33,3 +33,31 @@ test("retired instances reject mutations but allow refresh and latest app reques
  expect(f.bridge.snapshot(f.bridge.instance(1,999)!).instance_current).toBe(true);
  }finally{f.s.close();}
 });
+
+test("queued user action runs between broadcast recipients without concurrent execution",async()=>{
+ const f=fixture();try{
+ const a=new DeltaAdapter(f.service,f.config);const order:string[]=[];
+ (a as any).running=true;
+ a.enqueue(async()=>{order.push("background");},1);
+ a.enqueue(async()=>{order.push("user");await a.yieldToInteractive();order.push("user-done");},0);
+ await a.yieldToInteractive();
+ expect(order).toEqual(["user","user-done"]);expect(a.queued).toBe(1);
+ }finally{f.s.close();}
+});
+test("broadcast yields before sending state",async()=>{
+ const f=fixture();try{f.instance();const order:string[]=[];
+ f.bridge.publisher.yieldToInteractive=async()=>{order.push("user");};
+ f.bridge.publish=async()=>{order.push("state");};
+ await f.bridge.publishAll();expect(order).toEqual(["user","state"]);
+ }finally{f.s.close();}
+});
+test("static package cache initializes and isolates per-user entries",()=>{
+ const f=fixture();try{const a=new DeltaAdapter(f.service,f.config);const one=(a as any).getAssets();one["config.js"]=new Uint8Array([1]);const two=(a as any).getAssets();expect(two["config.js"]).toBeUndefined();expect(two["index.html"].length).toBeGreaterThan(0);}finally{f.s.close();}
+});
+
+test("shutdown drains active tasks before stopping Core",async()=>{
+ const f=fixture();try{const a=new DeltaAdapter(f.service,f.config);const order:string[]=[];let release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);
+ a.rpc={stopIo:async()=>{order.push("stop");}} as any;a.child={kill:()=>{order.push("kill");}} as any;
+ a.enqueue(async()=>{await gate;order.push("task");});const done=a.stop();expect(order).toEqual([]);release();await done;expect(order).toEqual(["task","stop","kill"]);
+ }finally{f.s.close();}
+});

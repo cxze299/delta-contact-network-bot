@@ -1,0 +1,8 @@
+[Unit]
+Description=Check Friend Assistant health every 30 seconds
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=30
+AccuracySec=1
+[Install]
+WantedBy=timers.target
