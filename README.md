@@ -63,6 +63,10 @@ docker compose stop
 
 运行时通过 Docker 自动重启；Core 异常退出会使容器退出，由 Docker 启动新进程，恢复持久化游标与处理结果。停止时排空当前任务、停止 Core、执行 WAL checkpoint。容器 `stop_grace_period` 为 15 秒。
 
+## 迁移部署
+
+2026-11-05 迁移记录、域名路由、旧链接兼容及防双活回退步骤见 [迁移说明](docs/migration-2026-11-05.md)。
+
 ## 备份与恢复
 
 `.env` 中设置独立的 `CONTACTBOT_BACKUP_PASSWORD`。启动后自动执行一次在线数据库备份，之后每 24 小时执行一次；保留最长 30 天。手动执行：
